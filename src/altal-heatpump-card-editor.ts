@@ -19,6 +19,8 @@ interface CardConfig {
   compact?: boolean;
   text_color?: string;
   animation_color?: string;
+  telemetry_prefix?: string;
+  show_telemetry?: boolean;
 }
 
 class AltalHeatpumpCardEditor extends HTMLElement {
@@ -184,12 +186,26 @@ class AltalHeatpumpCardEditor extends HTMLElement {
             <div class="toggle ${C.compact ? 'on' : ''}" data-field="compact"><div class="knob"></div></div>
           </div>
         </div>
+
+        <div class="section">
+          <div class="section-title">Телеметрия насоса (v4.3)</div>
+          <div class="row">
+            <label>Префикс сущностей</label>
+            <input type="text" id="telemetry_prefix" value="${C.telemetry_prefix || 'altal_t_'}" placeholder="altal_t_">
+            <div class="hint">Демон публикует sensor.&lt;префикс&gt;* (Inquire_ID 1-31, параметры d01-d15)</div>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">Показывать телеметрию</span>
+            <div class="toggle ${C.show_telemetry !== false ? 'on' : ''}" data-field="show_telemetry"><div class="knob"></div></div>
+          </div>
+        </div>
       </div>
     `;
 
     // Text inputs
     ['name', 'climate_entity', 'current_temp_entity', 'target_temp_entity',
-      'delta_t_entity', 'heating_entity', 'image', 'text_color', 'animation_color'].forEach(field => {
+      'delta_t_entity', 'heating_entity', 'image', 'text_color', 'animation_color',
+      'telemetry_prefix'].forEach(field => {
         const input = this._root.getElementById(field) as HTMLInputElement;
         input?.addEventListener('change', (e) => {
           const val = (e.target as HTMLInputElement).value;
@@ -228,4 +244,6 @@ class AltalHeatpumpCardEditor extends HTMLElement {
   }
 }
 
-customElements.define('altal-heatpump-card-editor', AltalHeatpumpCardEditor);
+if (!customElements.get('altal-heatpump-card-editor')) {
+  customElements.define('altal-heatpump-card-editor', AltalHeatpumpCardEditor);
+}

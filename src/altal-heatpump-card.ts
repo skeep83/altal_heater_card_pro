@@ -27,6 +27,10 @@ interface CardConfig {
   // v4.2.0 Additions
   text_color?: string;
   animation_color?: string;
+
+  // v4.3.0 Full telemetry (Deakon EVI Inquire_ID 1-31 + params d01-d15)
+  telemetry_prefix?: string;   // default 'altal_t_'
+  show_telemetry?: boolean;
 }
 
 interface HassEntity {
@@ -53,6 +57,8 @@ class AltalHeatpumpCard extends HTMLElement {
   private _svcTimer: ReturnType<typeof setTimeout> | null = null;
   private _cachedGraph: Record<string, { time: number; svg: string; min: number; max: number }> = {};
   private _activeGraphEntity: string | null = null;
+  private _telOpen = false;
+  private _paramsOpen = false;
 
   constructor() {
     super();
@@ -109,12 +115,84 @@ class AltalHeatpumpCard extends HTMLElement {
       prev.states[this._config.current_temp_entity] !== hass.states[this._config.current_temp_entity] ||
       prev.states[this._config.target_temp_entity] !== hass.states[this._config.target_temp_entity] ||
       prev.states[this._config.delta_t_entity] !== hass.states[this._config.delta_t_entity] ||
-      prev.states[this._config.heating_entity] !== hass.states[this._config.heating_entity];
+      prev.states[this._config.heating_entity] !== hass.states[this._config.heating_entity] ||
+      this._telSignature(prev) !== this._telSignature(hass);
 
     if (chg) this._render();
   }
 
   getCardSize() { return this._config?.compact ? 4 : 7; }
+
+  /* ── Full telemetry (v4.3) ─────────────── */
+
+  private _telSignature(hass: Hass): string {
+    const pfx = this._config?.telemetry_prefix || 'altal_t_';
+    let sig = '';
+    for (const id of Object.keys(hass.states)) {
+      if (id.startsWith('sensor.' + pfx) || id.startsWith('binary_sensor.' + pfx))
+        sig += id + '=' + hass.states[id].state + ';';
+    }
+    return sig;
+  }
+
+  private _collectTelemetry(hass: Hass) {
+    const pfx = this._config.telemetry_prefix || 'altal_t_';
+    const groups: Record<string, { label: string; value: string; hot?: boolean; bad?: boolean }[]> = {};
+    for (const id of Object.keys(hass.states)) {
+      let base: string | null = null;
+      if (id.startsWith('sensor.' + pfx)) base = id.slice(('sensor.' + pfx).length);
+      else if (id.startsWith('binary_sensor.' + pfx)) base = id.slice(('binary_sensor.' + pfx).length);
+      if (!base) continue;
+      const st = hass.states[id];
+      const a = st.attributes || {};
+      const group: string = a.altal_group || 'other';
+      const label: string = a.altal_label || base.replace(/_/g, ' ');
+      let value: string;
+      const isBin = id.startsWith('binary_sensor.');
+      if (a.altal_display) value = String(a.altal_display);
+      else if (isBin) value = st.state === 'on' ? 'Да' : 'Нет';
+      else if (st.state === 'unknown' || st.state === 'unavailable') continue;
+      else value = st.state + (a.unit_of_measurement ? ' ' + a.unit_of_measurement : '');
+      const bad = isBin ? st.state === 'on' && (a.device_class === 'problem' || a.device_class === 'cold') : false;
+      (groups[group] = groups[group] || []).push({ label, value, bad });
+    }
+    return groups;
+  }
+
+  private _renderTelemetry(hass: Hass): string {
+    if (this._config.show_telemetry === false) return '';
+    const groups = this._collectTelemetry(hass);
+    const groupNames: Record<string, string> = {
+      heat: 'Отопление', dhw: 'Горячая вода', refr: 'Фреоновый контур',
+      comp: 'Компрессор', elec: 'Электрика', service: 'Состояние', other: 'Прочее',
+    };
+    const order = ['service', 'heat', 'dhw', 'comp', 'refr', 'elec', 'other'];
+    const params = groups['params'] || [];
+    let body = '';
+    for (const g of order) {
+      const cells = groups[g];
+      if (!cells || !cells.length) continue;
+      body += `<div class="tel-group"><div class="tel-glbl">${groupNames[g] || g}</div><div class="tel-grid">` +
+        cells.map(c => `<div class="tel-cell"><div class="tv ${c.bad ? 'bad' : ''}">${c.value}</div><div class="tl">${c.label}</div></div>`).join('') +
+        `</div></div>`;
+    }
+    if (params.length) {
+      body += `<button class="tel-params-link" id="tel_params">${this._paramsOpen ? '▲ Скрыть параметры' : '▼ Параметры настройки (' + params.length + ')'}</button>`;
+      if (this._paramsOpen) {
+        body += `<div class="tel-group"><div class="tel-grid">` +
+          params.map(c => `<div class="tel-cell"><div class="tv">${c.value}</div><div class="tl">${c.label}</div></div>`).join('') +
+          `</div></div>`;
+      }
+    }
+    if (!body) return '';
+    return `
+      <div class="telemetry">
+        <button class="tel-toggle ${this._telOpen ? 'open' : ''}" id="tel_toggle">
+          <span>Телеметрия теплового насоса</span><span class="arr">▾</span>
+        </button>
+        <div class="tel-body ${this._telOpen ? 'open' : ''}">${body}</div>
+      </div>`;
+  }
 
   /* ── Helpers ───────────────────────────── */
 
@@ -670,6 +748,55 @@ class AltalHeatpumpCard extends HTMLElement {
       }
       @keyframes fadeDown { from{opacity:0;transform:translateY(-10px)} to{opacity:1;transform:none} }
 
+      /* ─── Full telemetry (v4.3) — same neumorphic language ─── */
+      .telemetry {
+        width: 100%; margin-bottom: 18px;
+        animation: pop 0.4s 0.35s both;
+      }
+      .tel-toggle {
+        width: 100%; display: flex; align-items: center; justify-content: space-between;
+        background: var(--bg); box-shadow: var(--raised-s); border: none;
+        border-radius: 16px; padding: 12px 18px; cursor: pointer;
+        font-size: 12px; font-weight: 600; text-transform: uppercase;
+        letter-spacing: 1.5px; color: var(--txt2); font-family: inherit;
+        transition: all 0.25s;
+      }
+      .tel-toggle:hover { transform: translateY(-2px); box-shadow: var(--raised); }
+      .tel-toggle:active { box-shadow: var(--inset-s); transform: none; }
+      .tel-toggle .arr { transition: transform 0.3s; }
+      .tel-toggle.open .arr { transform: rotate(180deg); }
+      .tel-body { display: none; margin-top: 12px; }
+      .tel-body.open { display: block; animation: fadeDown 0.4s ease-out; }
+      .tel-group { margin-bottom: 14px; }
+      .tel-group:last-child { margin-bottom: 0; }
+      .tel-glbl {
+        font-size: 10px; font-weight: 600; text-transform: uppercase;
+        letter-spacing: 1.5px; color: var(--txt2); margin: 0 4px 8px;
+      }
+      .tel-grid {
+        display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+        gap: 10px;
+      }
+      .tel-cell {
+        background: var(--bg); box-shadow: var(--inset-s);
+        border-radius: 14px; padding: 10px 12px; min-width: 0;
+      }
+      .tel-cell .tv {
+        font-size: clamp(14px, 4cqw, 17px); font-weight: 600; color: var(--txt);
+        line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .tel-cell .tv.hot { color: var(--heat); }
+      .tel-cell .tv.bad { color: #e53935; }
+      .tel-cell .tl {
+        font-size: 10px; font-weight: 500; color: var(--txt2); margin-top: 3px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .tel-params-link {
+        width: 100%; margin-top: 4px; background: none; border: none;
+        color: var(--info); font-size: 11px; font-weight: 600; cursor: pointer;
+        font-family: inherit; padding: 6px 0; letter-spacing: 0.5px;
+      }
+
       /* ─── Presets ─── */
       .presets {
         display: flex; gap: 10px; justify-content: center;
@@ -897,6 +1024,7 @@ class AltalHeatpumpCard extends HTMLElement {
           </div>
 
           <!-- DIAGNOSTICS & GRAPHS -->
+          ${this._renderTelemetry(this._hass)}
           ${C.show_diagnostics !== false || this._activeGraphEntity ? `
             <div class="diag ${(!C.show_diagnostics && !this._activeGraphEntity) || (!this._activeGraphEntity && diag.cls === 'hide') ? 'hide' : diag.cls}">
               <div class="diag-row">
@@ -938,6 +1066,18 @@ class AltalHeatpumpCard extends HTMLElement {
     $('up')?.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); this._adjust(1); });
     $('pwr')?.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); this._mode(isOff ? 'heat' : 'off'); });
 
+    // Telemetry toggle (v4.3)
+    $('tel_toggle')?.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      this._telOpen = !this._telOpen;
+      this._render();
+    });
+    $('tel_params')?.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      this._paramsOpen = !this._paramsOpen;
+      this._render();
+    });
+
     // Metric Click Listeners (Graphs)
     $('m_cur')?.addEventListener('click', () => {
       const C = this._config;
@@ -967,7 +1107,16 @@ class AltalHeatpumpCard extends HTMLElement {
 
 /* ═══════════════════ Register ═══════════════════ */
 
-customElements.define('altal-heatpump-card', AltalHeatpumpCard);
+// PRO variant: subclass so both element names can coexist (registry forbids
+// the same constructor under two names)
+class AltalHeatpumpCardPro extends AltalHeatpumpCard {}
+
+if (!customElements.get('altal-heatpump-card')) {
+  customElements.define('altal-heatpump-card', AltalHeatpumpCard);
+}
+if (!customElements.get('altal-heatpump-card-pro')) {
+  customElements.define('altal-heatpump-card-pro', AltalHeatpumpCardPro);
+}
 
 (window as any).customCards = (window as any).customCards || [];
 (window as any).customCards.push({
@@ -976,6 +1125,13 @@ customElements.define('altal-heatpump-card', AltalHeatpumpCard);
   description: 'Premium neumorphic card for Altal heat pump',
   preview: true,
   documentationURL: 'https://github.com/skeep83/altal_heater_card',
+});
+(window as any).customCards.push({
+  type: 'altal-heatpump-card-pro',
+  name: 'Altal Heater Card PRO',
+  description: 'Neumorphic card + full Deakon EVI telemetry (Inquire_ID 1-31, params d01-d15)',
+  preview: true,
+  documentationURL: 'https://github.com/skeep83/altal_heater_card_pro',
 });
 
 console.info(
