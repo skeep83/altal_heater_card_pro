@@ -1,10 +1,13 @@
 /**
  * Altal Heater Card — Home Assistant Lovelace Custom Card
  * Premium neumorphic card — Smart Home App style
- * v4.0.0
+ * v4.4.0
  */
 
 import './altal-heatpump-card-editor';
+import { choosePowerOnMode, getModeClass, getModeLabel } from './heatpump-modes';
+import { getTuyaInquiryGroup, getTuyaInquiryLabel } from './tuya-inquiry-map';
+import { formatTuyaSettingValue, getTuyaSettingLabel } from './tuya-setting-map';
 
 /* ═══════════════════ Types ═══════════════════ */
 
@@ -28,7 +31,7 @@ interface CardConfig {
   text_color?: string;
   animation_color?: string;
 
-  // v4.3.0 Full telemetry (Deakon EVI Inquire_ID 1-31 + params d01-d15)
+  // Tuya inquiry entities; the daemon supplies raw values and optional metadata.
   telemetry_prefix?: string;   // default 'altal_t_'
   show_telemetry?: boolean;
 }
@@ -59,6 +62,7 @@ class AltalHeatpumpCard extends HTMLElement {
   private _activeGraphEntity: string | null = null;
   private _telOpen = false;
   private _paramsOpen = false;
+  private _lastActiveMode: string | null = null;
 
   constructor() {
     super();
@@ -123,7 +127,7 @@ class AltalHeatpumpCard extends HTMLElement {
 
   getCardSize() { return this._config?.compact ? 4 : 7; }
 
-  /* ── Full telemetry (v4.3) ─────────────── */
+  /* ── Tuya inquiry telemetry ─────────────── */
 
   private _telSignature(hass: Hass): string {
     const pfx = this._config?.telemetry_prefix || 'altal_t_';
@@ -145,11 +149,20 @@ class AltalHeatpumpCard extends HTMLElement {
       if (!base) continue;
       const st = hass.states[id];
       const a = st.attributes || {};
-      const group: string = a.altal_group || 'other';
-      const label: string = a.altal_label || base.replace(/_/g, ' ');
+      const codeMatch = base.match(/(?:^|_)(c0*\d{1,2})(?:_|$)/i);
+      const inquiryCode = a.altal_inquire_id ?? a.inquire_id ?? codeMatch?.[1] ?? null;
+      const settingCodeMatch = base.match(/(?:^|_)([cd]0*\d{1,2})(?:_|$)/i);
+      const settingCode = a.altal_setting_id ?? settingCodeMatch?.[1] ?? null;
+      const settingLabel = settingCode ? getTuyaSettingLabel(settingCode) : null;
+      const group: string = a.altal_group || (settingLabel ? 'params' : null) ||
+        (inquiryCode ? getTuyaInquiryGroup(inquiryCode) : null) || 'other';
+      const label: string = a.altal_label || settingLabel ||
+        (inquiryCode ? getTuyaInquiryLabel(inquiryCode) : null) || base.replace(/_/g, ' ');
       let value: string;
       const isBin = id.startsWith('binary_sensor.');
-      if (a.altal_display) value = String(a.altal_display);
+      const mappedSettingValue = settingCode ? formatTuyaSettingValue(settingCode, st.state) : null;
+      if (a.altal_display != null) value = String(a.altal_display);
+      else if (mappedSettingValue !== null) value = mappedSettingValue;
       else if (isBin) value = st.state === 'on' ? 'Да' : 'Нет';
       else if (st.state === 'unknown' || st.state === 'unavailable') continue;
       else value = st.state + (a.unit_of_measurement ? ' ' + a.unit_of_measurement : '');
@@ -314,9 +327,35 @@ class AltalHeatpumpCard extends HTMLElement {
   }
 
   private _mode(m: string) {
+    const cl = this._hass.states[this._config.climate_entity];
+    const supportedModes = cl?.attributes?.hvac_modes;
+    if (Array.isArray(supportedModes) && supportedModes.length && !supportedModes.includes(m)) return;
+
+    if (m.toLowerCase() === 'off') {
+      if (cl?.state && cl.state.toLowerCase() !== 'off') this._lastActiveMode = cl.state;
+    } else {
+      this._lastActiveMode = m;
+    }
     this._hass.callService('climate', 'set_hvac_mode', {
       entity_id: this._config.climate_entity, hvac_mode: m,
     });
+  }
+
+  private _togglePower() {
+    const cl = this._hass.states[this._config.climate_entity];
+    if (!cl) return;
+    const modes: string[] = Array.isArray(cl.attributes?.hvac_modes)
+      ? cl.attributes.hvac_modes.filter((mode: unknown): mode is string => typeof mode === 'string')
+      : ['heat', 'off'];
+
+    if (cl.state.toLowerCase() === 'off') {
+      const restoreMode = choosePowerOnMode(modes, this._lastActiveMode);
+      if (restoreMode) this._mode(restoreMode);
+      return;
+    }
+
+    const offMode = modes.find(mode => mode.toLowerCase() === 'off');
+    if (offMode) this._mode(offMode);
   }
 
   /* ── Interactive Graphs ────────────────────── */
@@ -439,6 +478,9 @@ class AltalHeatpumpCard extends HTMLElement {
     plus: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="7" x2="12" y2="17"/><line x1="7" y1="12" x2="17" y2="12"/></svg>`,
     power: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v8"/><path d="M17.66 6.34a8 8 0 11-11.32 0"/></svg>`,
     heat: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22c-4 0-7-2.5-7-7 0-3.5 2.5-6 4.5-8.2C10.5 5.7 12 4 12 4s1.5 1.7 2.5 2.8C16.5 9 19 11.5 19 15c0 4.5-3 7-7 7z"/></svg>`,
+    cool: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M12 2v20M4 6l16 12M20 6L4 18M8 3l4 3 4-3M8 21l4-3 4 3M3 10l1-4 4 1M21 10l-1-4-4 1M3 14l1 4 4-1M21 14l-1 4-4-1"/></svg>`,
+    water: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3s7 7.2 7 12a7 7 0 1 1-14 0c0-4.8 7-12 7-12z"/><path d="M9 16a3 3 0 0 0 3 3"/></svg>`,
+    auto: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.5 9A7 7 0 0 1 18 6l2 2M4 16l2 2a7 7 0 0 0 12.5-3"/></svg>`,
     off: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`,
     up: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 15 12 9 18 15"/></svg>`,
     down: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`,
@@ -449,35 +491,40 @@ class AltalHeatpumpCard extends HTMLElement {
 
   private _css(): string {
     const customText = this._config?.text_color || 'var(--aerogel-text, var(--primary-text-color, #3b3f5c))';
-    const customHeat = this._config?.animation_color || 'var(--aerogel-warning, #f07b3f)';
+    const customHeat = this._config?.animation_color || 'var(--aerogel-warning, var(--state-climate-heat-color, var(--warning-color, #f07b3f)))';
 
     return `
-      @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@300;400;500;600;700;800&display=swap');
-
       :host {
-        --bg: var(--aerogel-base, var(--card-background-color, #e3e6ec));
-        --bg2: var(--aerogel-base-alt, var(--secondary-background-color, #d1d5db));
+        --bg: var(--aerogel-base, var(--card-background-color, var(--ha-card-background, var(--primary-background-color, #e3e6ec))));
+        --bg2: var(--aerogel-base-alt, color-mix(in srgb, var(--bg) 90%, var(--primary-text-color, #3b3f5c) 10%));
         --txt: ${customText};
-        --txt2: var(--aerogel-text-secondary, var(--secondary-text-color, #8b8fa3));
+        --txt2: var(--aerogel-text-secondary, var(--secondary-text-color, color-mix(in srgb, var(--txt) 65%, var(--bg) 35%)));
         --accent: var(--aerogel-accent, var(--primary-color, #6CB4EE));
 
-        --raised: var(--aerogel-convex-lg, 6px 6px 14px rgba(166,180,200,0.7), -6px -6px 14px rgba(255,255,255,0.8));
-        --raised-s: var(--aerogel-convex-sm, 3px 3px 8px rgba(166,180,200,0.7), -3px -3px 8px rgba(255,255,255,0.8));
-        --inset: var(--aerogel-concave-lg, inset 3px 3px 7px rgba(166,180,200,0.7), inset -3px -3px 7px rgba(255,255,255,0.8));
-        --inset-s: var(--aerogel-concave-sm, inset 2px 2px 4px rgba(166,180,200,0.7), inset -2px -2px 4px rgba(255,255,255,0.8));
-        --btn: var(--aerogel-flat, 4px 4px 10px rgba(166,180,200,0.7), -4px -4px 10px rgba(255,255,255,0.8));
-        --btn-p: var(--aerogel-active, inset 3px 3px 7px rgba(166,180,200,0.7), inset -3px -3px 7px rgba(255,255,255,0.8));
+        --shadow-dark: color-mix(in srgb, var(--bg) 78%, var(--primary-text-color, #3b3f5c) 22%);
+        --shadow-light: color-mix(in srgb, var(--bg) 86%, white 14%);
+        --sh-d: var(--shadow-dark);
+        --sh-l: var(--shadow-light);
+        --raised: var(--aerogel-convex-lg, 6px 6px 14px var(--shadow-dark), -6px -6px 14px var(--shadow-light));
+        --raised-s: var(--aerogel-convex-sm, 3px 3px 8px var(--shadow-dark), -3px -3px 8px var(--shadow-light));
+        --inset: var(--aerogel-concave-lg, inset 3px 3px 7px var(--shadow-dark), inset -3px -3px 7px var(--shadow-light));
+        --inset-s: var(--aerogel-concave-sm, inset 2px 2px 4px var(--shadow-dark), inset -2px -2px 4px var(--shadow-light));
+        --btn: var(--aerogel-flat, 4px 4px 10px var(--shadow-dark), -4px -4px 10px var(--shadow-light));
+        --btn-p: var(--aerogel-active, inset 3px 3px 7px var(--shadow-dark), inset -3px -3px 7px var(--shadow-light));
 
         --heat: ${customHeat};
-        --heat-g: rgba(240, 123, 63, 0.15);
-        --idle: var(--aerogel-text-secondary, #93a5be);
+        --heat-g: color-mix(in srgb, var(--heat) 16%, transparent);
+        --cool: var(--state-climate-cool-color, var(--info-color, #3b82f6));
+        --water: var(--state-climate-dry-color, var(--info-color, var(--primary-color, #3b82f6)));
+        --idle: var(--aerogel-text-secondary, var(--secondary-text-color, #93a5be));
         --good: var(--success-color, #05a677);
-        --warn: var(--aerogel-warning, #e5a100);
+        --warn: var(--aerogel-warning, var(--warning-color, #e5a100));
+        --error: var(--error-color, #e53935);
         --info: var(--aerogel-accent, #3b82f6);
 
         display: block; width: 100%; box-sizing: border-box;
         position: relative; z-index: 0; isolation: isolate;
-        font-family: var(--aerogel-font, 'Nunito', sans-serif);
+        font-family: var(--ha-font-family-body, var(--paper-font-body1_-_font-family, var(--aerogel-font, 'Nunito', sans-serif)));
       }
 
       * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -488,7 +535,7 @@ class AltalHeatpumpCard extends HTMLElement {
         border-radius: 24px;
         box-shadow: var(--raised);
         overflow: hidden;
-        font-family: 'Rubik', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        font-family: inherit;
         color: var(--txt);
         padding: clamp(16px, 5cqw, 24px);
         container-type: inline-size;
@@ -543,12 +590,12 @@ class AltalHeatpumpCard extends HTMLElement {
         letter-spacing: 0.5px;
       }
       .badge .dot { width: 7px; height: 7px; border-radius: 50%; }
-      .badge.heating { background: rgba(230,100,47,0.1); color: var(--heat); }
+      .badge.heating { background: color-mix(in srgb, var(--heat) 12%, transparent); color: var(--heat); }
       .badge.heating .dot { background: var(--heat); box-shadow: 0 0 6px var(--heat); animation: blink 1.4s ease-in-out infinite; }
-      .badge.idle { background: rgba(147,165,190,0.1); color: var(--idle); }
+      .badge.idle { background: color-mix(in srgb, var(--idle) 12%, transparent); color: var(--idle); }
       .badge.idle .dot { background: var(--idle); }
-      .badge.off { background: rgba(100,100,120,0.08); color: #999; }
-      .badge.off .dot { background: #aaa; }
+      .badge.off { background: color-mix(in srgb, var(--idle) 8%, transparent); color: var(--idle); }
+      .badge.off .dot { background: var(--idle); }
       @keyframes blink { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.3;transform:scale(1.5)} }
 
       /* Power */
@@ -614,7 +661,7 @@ class AltalHeatpumpCard extends HTMLElement {
         opacity: 1;
         border: 2.5px solid transparent;
         border-top-color: var(--heat);
-        border-right-color: rgba(230,100,47,0.3);
+        border-right-color: color-mix(in srgb, var(--heat) 30%, transparent);
         animation: sp 3s linear infinite;
         filter: drop-shadow(0 0 3px var(--heat-g));
       }
@@ -707,7 +754,7 @@ class AltalHeatpumpCard extends HTMLElement {
       }
       .dt-fill.ok { background: var(--good); }
       .dt-fill.mid { background: var(--warn); }
-      .dt-fill.bad { background: #e53935; }
+      .dt-fill.bad { background: var(--error); }
 
       /* ─── Diagnostics & Graphs ─── */
       .diag {
@@ -748,7 +795,7 @@ class AltalHeatpumpCard extends HTMLElement {
       }
       @keyframes fadeDown { from{opacity:0;transform:translateY(-10px)} to{opacity:1;transform:none} }
 
-      /* ─── Full telemetry (v4.3) — same neumorphic language ─── */
+      /* ─── Tuya inquiry telemetry — theme-aware neumorphic language ─── */
       .telemetry {
         width: 100%; margin-bottom: 18px;
         animation: pop 0.4s 0.35s both;
@@ -786,7 +833,7 @@ class AltalHeatpumpCard extends HTMLElement {
         line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       }
       .tel-cell .tv.hot { color: var(--heat); }
-      .tel-cell .tv.bad { color: #e53935; }
+      .tel-cell .tv.bad { color: var(--error); }
       .tel-cell .tl {
         font-size: 10px; font-weight: 500; color: var(--txt2); margin-top: 3px;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -831,8 +878,10 @@ class AltalHeatpumpCard extends HTMLElement {
       .mbtn:hover { transform: translateY(-2px); }
       .mbtn:active { box-shadow: var(--btn-p); transform: scale(0.95); }
       .mbtn.on { box-shadow: var(--btn-p); }
-      .mbtn.on.heat { color: var(--heat); }
-      .mbtn.on.off { color: var(--idle); }
+      .mbtn.on.mode-heat, .mbtn.on.mode-heat-water { color: var(--heat); }
+      .mbtn.on.mode-cool, .mbtn.on.mode-cool-water { color: var(--cool); }
+      .mbtn.on.mode-water { color: var(--water); }
+      .mbtn.on.mode-off { color: var(--idle); }
       .mbtn svg { width: 16px; height: 16px; }
 
       /* ─── Error ─── */
@@ -840,7 +889,7 @@ class AltalHeatpumpCard extends HTMLElement {
         padding: 40px; text-align: center; border-radius: 24px;
         background: var(--bg); box-shadow: var(--raised);
       }
-      .err h3 { font-size: 18px; font-weight: 600; color: #e53935; margin-bottom: 8px; }
+      .err h3 { font-size: 18px; font-weight: 600; color: var(--error); margin-bottom: 8px; }
       .err p { font-size: 14px; color: var(--txt2); }
     `;
   }
@@ -869,17 +918,21 @@ class AltalHeatpumpCard extends HTMLElement {
     const dT = C.delta_t_entity ? this._v(H, C.delta_t_entity) : null;
 
     // Determine heating state (from helper entity OR fallback to native hvac_action)
+    const hvac = cl.state;
+    const isOff = hvac.toLowerCase() === 'off';
+    const hvacKind = getModeClass(hvac);
     let isH = false;
     if (C.heating_entity && H.states[C.heating_entity]) {
       isH = H.states[C.heating_entity].state === 'on';
     } else {
-      isH = cl.attributes.hvac_action === 'heating' || (cl.state === 'heat' && curT !== null && curT < tgtT);
+      isH = cl.attributes.hvac_action === 'heating' ||
+        ((hvacKind === 'heat' || hvacKind === 'heat-water') && curT !== null && curT < tgtT);
     }
 
-    const hvac = cl.state;
-    const isOff = hvac === 'off';
     const cTgt = this._pendingTarget ?? cl.attributes.temperature;
-    const modes: string[] = cl.attributes.hvac_modes || ['heat', 'off'];
+    const modes: string[] = Array.isArray(cl.attributes.hvac_modes)
+      ? cl.attributes.hvac_modes.filter((mode: unknown): mode is string => typeof mode === 'string')
+      : ['heat', 'off'];
     const name = C.name || cl.attributes.friendly_name || 'Altal Heat Pump';
     const presets = C.quick_presets || [19, 20, 22, 24];
 
@@ -916,8 +969,13 @@ class AltalHeatpumpCard extends HTMLElement {
     if (isH) { bCls = 'heating'; bTxt = 'Нагрев'; }
     else if (!isOff) { bCls = 'idle'; bTxt = 'Ожидание'; }
 
-    const mLbl: Record<string, string> = { heat: 'Обогрев', off: 'Выкл', cool: 'Охлажд.', auto: 'Авто' };
-    const mIco: Record<string, string> = { heat: this._ico.heat, off: this._ico.off };
+    const mIco: Record<string, string> = {
+      heat: this._ico.heat, hot: this._ico.heat,
+      cool: this._ico.cool, cold: this._ico.cool,
+      hotwater: this._ico.water, dhw: this._ico.water,
+      hot_hotwater: this._ico.heat, cold_hotwater: this._ico.cool,
+      auto: this._ico.auto, off: this._ico.off,
+    };
 
     const dtPct = dT != null ? Math.min(100, (dT / 12) * 100) : 0;
     const dtCls = dT != null ? (dT >= 4 && dT <= 7 ? 'ok' : dT < 3 || dT > 9 ? 'bad' : 'mid') : 'ok';
@@ -940,7 +998,7 @@ class AltalHeatpumpCard extends HTMLElement {
           : ''}
               <div class="top-info">
                 <div class="name">${name}</div>
-                <div class="status">Тепловой насос · ${mLbl[hvac] || hvac}</div>
+                <div class="status">Тепловой насос · ${getModeLabel(hvac)}</div>
               </div>
             </div>
             <div class="top-right">
@@ -1047,26 +1105,30 @@ class AltalHeatpumpCard extends HTMLElement {
 
           <!-- MODES -->
           <div class="modes">
-            ${modes.map(m => `<button class="mbtn ${m === hvac ? 'on' : ''} ${m}" data-m="${m}">${mIco[m] || ''} ${mLbl[m] || m}</button>`).join('')}
+            ${modes.map(m => {
+              const modeKey = m.toLowerCase();
+              const label = getModeLabel(m);
+              return `<button class="mbtn mode-${getModeClass(m)} ${modeKey === hvac.toLowerCase() ? 'on' : ''}" data-m="${m}" aria-label="${label}">${mIco[modeKey] || ''} ${label}</button>`;
+            }).join('')}
           </div>
 
         </div>
       </ha-card>
     `;
 
-    this._bindAll(isOff);
+    this._bindAll();
   }
 
   /* ── Events ───────────────────────────── */
 
-  private _bindAll(isOff: boolean) {
+  private _bindAll() {
     const $ = (id: string) => this._root.getElementById(id);
 
     $('dn')?.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); this._adjust(-1); });
     $('up')?.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); this._adjust(1); });
-    $('pwr')?.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); this._mode(isOff ? 'heat' : 'off'); });
+    $('pwr')?.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); this._togglePower(); });
 
-    // Telemetry toggle (v4.3)
+    // Telemetry disclosure toggles
     $('tel_toggle')?.addEventListener('click', (e) => {
       e.preventDefault(); e.stopPropagation();
       this._telOpen = !this._telOpen;
@@ -1129,13 +1191,13 @@ if (!customElements.get('altal-heatpump-card-pro')) {
 (window as any).customCards.push({
   type: 'altal-heatpump-card-pro',
   name: 'Altal Heater Card PRO',
-  description: 'Neumorphic card + full Deakon EVI telemetry (Inquire_ID 1-31, params d01-d15)',
+  description: 'Theme-aware neumorphic card with Tuya EVI c01-c31 inquiry labels and native HVAC mode mapping',
   preview: true,
   documentationURL: 'https://github.com/skeep83/altal_heater_card_pro',
 });
 
 console.info(
-  '%c ALTAL-HEATER-CARD %c v4.0.0 ',
+  '%c ALTAL-HEATER-CARD %c v4.4.0 ',
   'color: white; background: #e6642f; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 8px;',
   'color: #e6642f; background: #e3e6ec; font-weight: bold; border-radius: 0 4px 4px 0; padding: 2px 8px;'
 );
