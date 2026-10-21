@@ -188,11 +188,11 @@ class AltalHeatpumpCardEditor extends HTMLElement {
         </div>
 
         <div class="section">
-          <div class="section-title">Телеметрия насоса (v4.3)</div>
+          <div class="section-title">Телеметрия Tuya (c01–c31)</div>
           <div class="row">
             <label>Префикс сущностей</label>
             <input type="text" id="telemetry_prefix" value="${C.telemetry_prefix || 'altal_t_'}" placeholder="altal_t_">
-            <div class="hint">Демон публикует sensor.&lt;префикс&gt;* (Inquire_ID 1-31, параметры d01-d15)</div>
+            <div class="hint">Демон публикует sensor.&lt;префикс&gt;*. Для автоподписей передавайте altal_inquire_id или включайте cXX в ID. Значения остаются сырыми: масштаб/единицы задаёт интеграция; c04 пока не подтверждён.</div>
           </div>
           <div class="toggle-row">
             <span class="toggle-label">Показывать телеметрию</span>
