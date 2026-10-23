@@ -14,6 +14,8 @@ A theme-aware neumorphic Home Assistant Lovelace card for the **Altal** heat pum
 - 🌗 Neumorphic surfaces and colors follow the active Home Assistant theme
 - ⚙️ Visual card editor
 - 🌡️ Tuya EVI inquiry labels (`c01`–`c31`) and native HVAC mode labels
+- 🌀 Instrument-style live animation driven by the machine: the scale lights up to the current temperature, a light trace sweeps it at a pace set by the compressor frequency and fades out as the compressor coasts down, a sheen runs along the pipe from supply to return only while heat is delivered, and the glow follows power
+- ⚡ Rendered once, then patched in place — state updates never rebuild the card or replay animations
 
 ## Installation (HACS)
 
@@ -44,6 +46,20 @@ image: /local/altal-pump.png
 telemetry_prefix: altal_t_
 show_telemetry: true
 ```
+
+Optional live readings (each defaults to `sensor.<telemetry_prefix><name>` when it exists):
+
+| Option | Default suffix | Used for |
+| --- | --- | --- |
+| `supply_entity` | `outlet_temp` | Supply temperature, water loop |
+| `return_entity` | `inlet_temp` | Return temperature, water loop |
+| `compressor_entity` | `comp_freq` | "Running" state, rotor speed |
+| `power_entity` | `power` | Flow speed, glow intensity |
+| `tank_entity` | `tank_temp` | DHW tank tile |
+| `outdoor_entity` | `outdoor_temp` | Outdoor tile |
+| `scale_min` / `scale_max` | `20` / `60` | Dial scale, °C |
+
+"Running" comes from the compressor (frequency or power above zero), or from `heating_entity` when set. Water below the setpoint with the compressor stopped shows as *Ожидание*, and nothing animates then. If `delta_t_entity` is not set, ΔT is computed from supply and return. Animations are disabled when the system asks for reduced motion.
 
 The card translates Home Assistant mode values for display (`hot`, `cold`, `hotwater`, `hot_hotwater`, `cold_hotwater`) but sends the original supported value to Home Assistant. The power control uses the entity's `hvac_modes` list and restores the last active mode when possible. The manual's c41/d41 setting controls which mode families are enabled; it is not the current runtime mode.
 

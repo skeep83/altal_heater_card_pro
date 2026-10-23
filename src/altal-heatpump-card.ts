@@ -1,13 +1,14 @@
 /**
  * Altal Heater Card — Home Assistant Lovelace Custom Card
  * Premium neumorphic card — Smart Home App style
- * v4.4.0
+ * v4.5.0 — built once, then patched in place; animations follow the compressor
  */
 
 import './altal-heatpump-card-editor';
 import { choosePowerOnMode, getModeClass, getModeLabel } from './heatpump-modes';
 import { getTuyaInquiryGroup, getTuyaInquiryLabel } from './tuya-inquiry-map';
 import { formatTuyaSettingValue, getTuyaSettingLabel } from './tuya-setting-map';
+import { computeRunState, deltaClass, flowSpeed, rotorSpeed, scaleFraction, type RunState } from './heatpump-state';
 
 /* ═══════════════════ Types ═══════════════════ */
 
@@ -34,6 +35,17 @@ interface CardConfig {
   // Tuya inquiry entities; the daemon supplies raw values and optional metadata.
   telemetry_prefix?: string;   // default 'altal_t_'
   show_telemetry?: boolean;
+
+  // v4.5.0: live readings that drive the animations. Each defaults to
+  // sensor.<telemetry_prefix><name> when that entity exists.
+  supply_entity?: string;      // outlet_temp
+  return_entity?: string;      // inlet_temp
+  compressor_entity?: string;  // comp_freq
+  power_entity?: string;       // power
+  tank_entity?: string;        // tank_temp
+  outdoor_entity?: string;     // outdoor_temp
+  scale_min?: number;          // dial scale, °C (default 20)
+  scale_max?: number;          // dial scale, °C (default 60)
 }
 
 interface HassEntity {
@@ -64,9 +76,32 @@ class AltalHeatpumpCard extends HTMLElement {
   private _paramsOpen = false;
   private _lastActiveMode: string | null = null;
 
+  // DOM is rebuilt only when this key changes; everything else is patched in place
+  private _structKey = '';
+  private _lastTelHtml = '';
+  private _numTweens = new WeakMap<Element, { from: number; to: number; raf: number }>();
+
+  // Physics-driven animation: rotor angle and water flow integrate a speed that
+  // eases toward the live target, so the pump visibly spins up and coasts down.
+  private _anim = { rot: 0, sweep: 0, flow: 0, spd: 0, flowSpd: 0, tgtSpd: 0, tgtFlow: 0, raf: 0, last: 0 };
+  private _comets: SVGElement[] = [];
+  private _sheen: SVGElement | null = null;
+  private _sheenGrad: SVGElement | null = null;
+  private _reduceMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
   constructor() {
     super();
     this._root = this.attachShadow({ mode: 'open' });
+  }
+
+  connectedCallback() {
+    if (this._anim.tgtSpd || this._anim.tgtFlow) this._kick();
+  }
+
+  disconnectedCallback() {
+    if (this._anim.raf) cancelAnimationFrame(this._anim.raf);
+    this._anim.raf = 0;
+    this._anim.last = 0;
   }
 
   static getConfigElement() { return document.createElement('altal-heatpump-card-editor'); }
@@ -94,6 +129,7 @@ class AltalHeatpumpCard extends HTMLElement {
       show_controls: true, show_image: true, compact: false,
       ...config,
     };
+    this._structKey = '';
     if (this._hass) this._render();
   }
 
@@ -120,9 +156,42 @@ class AltalHeatpumpCard extends HTMLElement {
       prev.states[this._config.target_temp_entity] !== hass.states[this._config.target_temp_entity] ||
       prev.states[this._config.delta_t_entity] !== hass.states[this._config.delta_t_entity] ||
       prev.states[this._config.heating_entity] !== hass.states[this._config.heating_entity] ||
+      [this._config.supply_entity, this._config.return_entity, this._config.compressor_entity,
+        this._config.power_entity, this._config.tank_entity, this._config.outdoor_entity]
+        .some(id => id && prev.states[id] !== hass.states[id]) ||
       this._telSignature(prev) !== this._telSignature(hass);
 
     if (chg) this._render();
+  }
+
+  /* ── Live entity resolution ────────────── */
+
+  /** Configured entity, else sensor.<prefix><suffix> if Home Assistant has it. */
+  private _ent(configured: string | undefined, suffix: string): string | null {
+    if (configured) return configured;
+    const id = `sensor.${this._config.telemetry_prefix || 'altal_t_'}${suffix}`;
+    return this._hass?.states?.[id] ? id : null;
+  }
+
+  private _live() {
+    const C = this._config, H = this._hass;
+    const e = {
+      supply: this._ent(C.supply_entity, 'outlet_temp'),
+      ret: this._ent(C.return_entity, 'inlet_temp'),
+      freq: this._ent(C.compressor_entity, 'comp_freq'),
+      power: this._ent(C.power_entity, 'power'),
+      tank: this._ent(C.tank_entity, 'tank_temp'),
+      outdoor: this._ent(C.outdoor_entity, 'outdoor_temp'),
+      tankSet: this._ent(undefined, 'param_tank_set'),
+    };
+    const v = (id: string | null) => (id ? this._v(H, id) : null);
+    const supply = v(e.supply), ret = v(e.ret);
+    const dtEnt = C.delta_t_entity ? this._v(H, C.delta_t_entity) : null;
+    const dt = dtEnt ?? (supply !== null && ret !== null ? Math.round((supply - ret) * 10) / 10 : null);
+    return {
+      e, supply, ret, dt,
+      freq: v(e.freq), power: v(e.power), tank: v(e.tank), outdoor: v(e.outdoor), tankSet: v(e.tankSet),
+    };
   }
 
   getCardSize() { return this._config?.compact ? 4 : 7; }
@@ -174,6 +243,17 @@ class AltalHeatpumpCard extends HTMLElement {
 
   private _renderTelemetry(hass: Hass): string {
     if (this._config.show_telemetry === false) return '';
+    if (!Object.keys(this._collectTelemetry(hass)).length) return '';
+    return `
+      <div class="telemetry">
+        <button class="tel-toggle ${this._telOpen ? 'open' : ''}" id="tel_toggle">
+          <span>Телеметрия теплового насоса</span><span class="arr">▾</span>
+        </button>
+        <div class="tel-body ${this._telOpen ? 'open' : ''}">${this._telOpen ? this._telBody(hass) : ''}</div>
+      </div>`;
+  }
+
+  private _telBody(hass: Hass): string {
     const groups = this._collectTelemetry(hass);
     const groupNames: Record<string, string> = {
       heat: 'Отопление', dhw: 'Горячая вода', refr: 'Фреоновый контур',
@@ -197,14 +277,7 @@ class AltalHeatpumpCard extends HTMLElement {
           `</div></div>`;
       }
     }
-    if (!body) return '';
-    return `
-      <div class="telemetry">
-        <button class="tel-toggle ${this._telOpen ? 'open' : ''}" id="tel_toggle">
-          <span>Телеметрия теплового насоса</span><span class="arr">▾</span>
-        </button>
-        <div class="tel-body ${this._telOpen ? 'open' : ''}">${body}</div>
-      </div>`;
+    return body;
   }
 
   /* ── Helpers ───────────────────────────── */
@@ -304,6 +377,7 @@ class AltalHeatpumpCard extends HTMLElement {
     // Instant UI update
     const el = this._root.querySelector('.sp-val');
     if (el) el.textContent = clamped.toFixed(1) + '°';
+    this._render();
 
     // Debounced service call
     if (this._svcTimer) clearTimeout(this._svcTimer);
@@ -318,6 +392,7 @@ class AltalHeatpumpCard extends HTMLElement {
     this._pendingTarget = temp;
     const el = this._root.querySelector('.sp-val');
     if (el) el.textContent = temp.toFixed(1) + '°';
+    this._render();
     if (this._svcTimer) clearTimeout(this._svcTimer);
     this._svcTimer = setTimeout(() => {
       this._hass.callService('climate', 'set_temperature', {
@@ -460,6 +535,9 @@ class AltalHeatpumpCard extends HTMLElement {
           this._activeGraphEntity = null; // Not enough data
           this._render();
         }
+      } else {
+        this._activeGraphEntity = null; // No history recorded for this entity
+        this._render();
       }
     } catch (e) {
       console.warn("Altal Card - History fetch failed", e);
@@ -485,641 +563,644 @@ class AltalHeatpumpCard extends HTMLElement {
     up: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 15 12 9 18 15"/></svg>`,
     down: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`,
     stable: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>`,
+    rotor: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M12 10c0-4 1-7 4-7 2 0 2 3 0 5l-2.3 2.6M14 12c4 0 7 1 7 4 0 2-3 2-5 0l-2.6-2.3M12 14c0 4-1 7-4 7-2 0-2-3 0-5l2.3-2.6M10 12c-4 0-7-1-7-4 0-2 3-2 5 0l2.6 2.3"/></svg>`,
+    bolt: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>`,
+    tank: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="3" width="12" height="18" rx="4"/><path d="M6 13c2-1 4 1 6 0s4-1 6 0"/></svg>`,
+    outdoor: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M17 3v4"/></svg>`,
   };
 
   /* ══════════════════ CSS ══════════════════ */
 
   private _css(): string {
     const customText = this._config?.text_color || 'var(--aerogel-text, var(--primary-text-color, #3b3f5c))';
-    const customHeat = this._config?.animation_color || 'var(--aerogel-warning, var(--state-climate-heat-color, var(--warning-color, #f07b3f)))';
+    const customHeat = this._config?.animation_color || 'var(--aerogel-warning, var(--state-climate-heat-color, var(--accent-color, var(--warning-color, #f07b3f))))';
 
     return `
       :host {
-        --bg: var(--aerogel-base, var(--card-background-color, var(--ha-card-background, var(--primary-background-color, #e3e6ec))));
-        --bg2: var(--aerogel-base-alt, color-mix(in srgb, var(--bg) 90%, var(--primary-text-color, #3b3f5c) 10%));
+        --bg: var(--neumorphic-surface, var(--aerogel-base, var(--card-background-color, var(--ha-card-background, var(--primary-background-color, #e3e6ec)))));
         --txt: ${customText};
         --txt2: var(--aerogel-text-secondary, var(--secondary-text-color, color-mix(in srgb, var(--txt) 65%, var(--bg) 35%)));
         --accent: var(--aerogel-accent, var(--primary-color, #6CB4EE));
 
         --shadow-dark: color-mix(in srgb, var(--bg) 78%, var(--primary-text-color, #3b3f5c) 22%);
         --shadow-light: color-mix(in srgb, var(--bg) 86%, white 14%);
-        --sh-d: var(--shadow-dark);
-        --sh-l: var(--shadow-light);
-        --raised: var(--aerogel-convex-lg, 6px 6px 14px var(--shadow-dark), -6px -6px 14px var(--shadow-light));
-        --raised-s: var(--aerogel-convex-sm, 3px 3px 8px var(--shadow-dark), -3px -3px 8px var(--shadow-light));
-        --inset: var(--aerogel-concave-lg, inset 3px 3px 7px var(--shadow-dark), inset -3px -3px 7px var(--shadow-light));
-        --inset-s: var(--aerogel-concave-sm, inset 2px 2px 4px var(--shadow-dark), inset -2px -2px 4px var(--shadow-light));
-        --btn: var(--aerogel-flat, 4px 4px 10px var(--shadow-dark), -4px -4px 10px var(--shadow-light));
-        --btn-p: var(--aerogel-active, inset 3px 3px 7px var(--shadow-dark), inset -3px -3px 7px var(--shadow-light));
+        --raised: var(--neumorphic-convex-shadow-md, var(--aerogel-convex-lg, 6px 6px 12px var(--shadow-dark), -6px -6px 12px var(--shadow-light)));
+        --raised-s: var(--neumorphic-convex-shadow-sm, var(--aerogel-convex-sm, 3px 3px 6px var(--shadow-dark), -3px -3px 6px var(--shadow-light)));
+        --raised-xs: var(--neumorphic-convex-shadow-xs, 2px 2px 4px var(--shadow-dark), -2px -2px 4px var(--shadow-light));
+        --inset: var(--neumorphic-concave-shadow-md, var(--aerogel-concave-lg, inset 3px 3px 7px var(--shadow-dark), inset -3px -3px 7px var(--shadow-light)));
+        --inset-s: var(--neumorphic-concave-shadow-sm, var(--aerogel-concave-sm, inset 2px 2px 4px var(--shadow-dark), inset -2px -2px 4px var(--shadow-light)));
+        --inset-xs: var(--neumorphic-concave-shadow-xs, inset 1px 1px 2px var(--shadow-dark), inset -1px -1px 2px var(--shadow-light));
 
-        --heat: ${customHeat};
-        --heat-g: color-mix(in srgb, var(--heat) 16%, transparent);
-        --cool: var(--state-climate-cool-color, var(--info-color, #3b82f6));
-        --water: var(--state-climate-dry-color, var(--info-color, var(--primary-color, #3b82f6)));
-        --idle: var(--aerogel-text-secondary, var(--secondary-text-color, #93a5be));
-        --good: var(--success-color, #05a677);
-        --warn: var(--aerogel-warning, var(--warning-color, #e5a100));
-        --error: var(--error-color, #e53935);
-        --info: var(--aerogel-accent, #3b82f6);
+        /* status colours are mixed toward the text colour so they stay readable on light and dark surfaces */
+        --heat-raw: ${customHeat};
+        --heat: color-mix(in srgb, var(--heat-raw) 72%, var(--txt));
+        --cool: color-mix(in srgb, var(--state-climate-cool-color, var(--info-color, #3b82f6)) 75%, var(--txt));
+        --water: color-mix(in srgb, var(--state-climate-dry-color, var(--info-color, #3b82f6)) 75%, var(--txt));
+        --idle: var(--txt2);
+        --good: color-mix(in srgb, var(--success-color, #05a677) 75%, var(--txt));
+        --warn: color-mix(in srgb, var(--warning-color, #e5a100) 55%, var(--txt));
+        --error: color-mix(in srgb, var(--error-color, #e53935) 75%, var(--txt));
+        --info: var(--cool);
 
         display: block; width: 100%; box-sizing: border-box;
         position: relative; z-index: 0; isolation: isolate;
-        font-family: var(--ha-font-family-body, var(--paper-font-body1_-_font-family, var(--aerogel-font, 'Nunito', sans-serif)));
+        font-family: var(--primary-font-family, var(--ha-font-family-body, var(--paper-font-body1_-_font-family, inherit)));
       }
-
       * { margin: 0; padding: 0; box-sizing: border-box; }
+      ha-card { background: none; box-shadow: none; border: 0; overflow: visible; }
 
-      /* ─── Card ─── */
       .card {
-        background: var(--bg);
-        border-radius: 24px;
-        box-shadow: var(--raised);
-        overflow: hidden;
-        font-family: inherit;
-        color: var(--txt);
-        padding: clamp(16px, 5cqw, 24px);
-        container-type: inline-size;
+        background: var(--bg); color: var(--txt);
+        border-radius: 18px; box-shadow: var(--raised);
+        padding: 14px 16px 16px; container-type: inline-size; overflow: hidden;
       }
 
-      /* ─── Top ─── */
-      .top {
-        display: flex; align-items: center; justify-content: space-between;
-        margin-bottom: clamp(16px, 5cqw, 24px);
-      }
-      .top-left { display: flex; align-items: center; gap: clamp(12px, 3cqw, 16px); }
-
+      /* ─── Header ─── */
+      .top { display: flex; align-items: center; gap: 12px; }
       .pump-thumb {
-        width: clamp(60px, 15cqw, 80px); aspect-ratio: 1;
-        border-radius: 20px;
-        background: var(--bg);
-        box-shadow: var(--raised-s);
-        overflow: hidden; flex-shrink: 0;
-        display: flex; align-items: center; justify-content: center;
-        transition: transform 0.3s;
+        width: 48px; height: 48px; border-radius: 14px; flex: none; overflow: hidden;
+        background: var(--bg); box-shadow: var(--raised-s);
+        display: flex; align-items: center; justify-content: center; color: var(--txt2);
       }
-      .pump-thumb:hover { transform: scale(1.04); }
-      .pump-thumb img {
-        width: 100%; height: 100%;
-        object-fit: cover;
-      }
-      .pump-thumb.empty {
-        font-size: clamp(10px, 2.5cqw, 12px); font-weight: 700;
-        color: var(--txt2); letter-spacing: 2px;
-      }
-
-      .top-info {}
-      .top-info .name {
-        font-size: clamp(16px, 4cqw, 20px); font-weight: 600;
-        color: var(--txt); line-height: 1.3;
-      }
-      .top-info .status {
-        font-size: clamp(11px, 2.8cqw, 13px); font-weight: 400;
-        color: var(--txt2); margin-top: 4px;
-      }
-
-      .top-right {
-        display: flex; flex-direction: column;
-        align-items: flex-end; gap: clamp(6px, 2cqw, 10px);
-      }
-
-      /* Badge */
+      .pump-thumb img { width: 100%; height: 100%; object-fit: cover; }
+      .pump-thumb svg { width: 28px; }
+      .top-info { min-width: 0; flex: 1; }
+      .name { font-size: 16px; font-weight: 700; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .status { font-size: 12.5px; color: var(--txt2); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .top-right { display: flex; align-items: center; gap: 10px; flex: none; }
       .badge {
-        display: inline-flex; align-items: center; gap: 6px;
-        padding: 5px 14px; border-radius: 20px;
-        font-size: clamp(9px, 2cqw, 11px); font-weight: 600;
-        letter-spacing: 0.5px;
+        display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 99px;
+        font-size: 12.5px; font-weight: 650; box-shadow: var(--inset-xs); color: var(--txt2); white-space: nowrap;
+        transition: color .4s;
       }
-      .badge .dot { width: 7px; height: 7px; border-radius: 50%; }
-      .badge.heating { background: color-mix(in srgb, var(--heat) 12%, transparent); color: var(--heat); }
-      .badge.heating .dot { background: var(--heat); box-shadow: 0 0 6px var(--heat); animation: blink 1.4s ease-in-out infinite; }
-      .badge.idle { background: color-mix(in srgb, var(--idle) 12%, transparent); color: var(--idle); }
-      .badge.idle .dot { background: var(--idle); }
-      .badge.off { background: color-mix(in srgb, var(--idle) 8%, transparent); color: var(--idle); }
-      .badge.off .dot { background: var(--idle); }
-      @keyframes blink { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.3;transform:scale(1.5)} }
-
-      /* Power */
+      .badge .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; transition: box-shadow .6s; }
+      .badge.running { color: var(--heat); }
+      .badge.running .dot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--heat) 18%, transparent); }
+      .badge.waiting { color: var(--warn); }
+      .badge.reached { color: var(--good); }
       .pwr {
-        width: clamp(36px, 9cqw, 44px); aspect-ratio: 1; border-radius: 14px; border: none;
-        background: var(--bg); box-shadow: var(--btn);
-        cursor: pointer; display: flex; align-items: center; justify-content: center;
-        color: var(--idle); transition: all 0.25s;
+        width: 40px; height: 40px; border-radius: 13px; border: none; cursor: pointer;
+        background: var(--bg); box-shadow: var(--raised-s); color: var(--idle);
+        display: flex; align-items: center; justify-content: center; transition: box-shadow .2s, color .3s;
       }
-      .pwr:hover { box-shadow: 5px 5px 12px var(--sh-d), -5px -5px 12px var(--sh-l); }
-      .pwr:active { box-shadow: var(--btn-p); }
+      .pwr:active { box-shadow: var(--inset-s); }
       .pwr.on { color: var(--heat); }
-      .pwr svg { width: clamp(18px, 4.5cqw, 22px); height: clamp(18px, 4.5cqw, 22px); }
+      .pwr svg { width: 20px; height: 20px; }
 
-      /* ─── Main dial area ─── */
-      .dial-area {
-        display: flex; align-items: center; justify-content: center;
-        gap: clamp(12px, 4cqw, 20px); margin-bottom: 12px;
-      }
-
-      /* Side +/- */
+      /* ─── Dial ─── */
+      .dial-area { display: flex; align-items: center; justify-content: center; gap: clamp(10px, 4cqw, 22px); margin: 16px 0 6px; }
       .side-btn {
-        width: clamp(40px, 10cqw, 56px); aspect-ratio: 1; border-radius: 16px; border: none;
-        background: var(--bg); box-shadow: var(--btn);
-        cursor: pointer; display: flex; align-items: center; justify-content: center;
-        color: var(--txt); flex-shrink: 0;
-        transition: all 0.2s; -webkit-tap-highlight-color: transparent;
-      }
-      .side-btn:hover { transform: scale(1.06); box-shadow: var(--raised); }
-      .side-btn:active { box-shadow: var(--btn-p); transform: scale(0.94); }
-      .side-btn svg { width: clamp(20px, 5cqw, 24px); }
-
-      /* Circle */
-      .circle {
-        width: clamp(140px, 40cqw, 260px); aspect-ratio: 1;
-        border-radius: 50%; flex-shrink: 0;
-        background: var(--bg); box-shadow: var(--raised);
+        width: 46px; height: 46px; border-radius: 15px; border: none; flex: none; cursor: pointer;
+        background: var(--bg); box-shadow: var(--raised-s); color: var(--txt);
         display: flex; align-items: center; justify-content: center;
-        position: relative;
+        transition: box-shadow .15s, transform .15s; -webkit-tap-highlight-color: transparent;
       }
-      .circle-in {
-        width: 85%; aspect-ratio: 1;
-        border-radius: 50%;
-        background: var(--bg); box-shadow: var(--inset);
-        display: flex; flex-direction: column;
-        align-items: center; justify-content: center;
-        position: relative; z-index: 2; overflow: hidden;
+      .side-btn:active { box-shadow: var(--inset-s); transform: scale(.96); }
+      .side-btn svg { width: 22px; }
+      .dial { position: relative; width: clamp(170px, 54cqw, 220px); aspect-ratio: 1; flex: none; border-radius: 50%; background: var(--bg); box-shadow: var(--raised); }
+      .dial svg.gauge { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+      .g-track { fill: none; stroke: color-mix(in srgb, var(--txt2) 16%, transparent); stroke-width: 2; stroke-linecap: round; }
+      .g-val { fill: none; stroke: url(#gGrad); stroke-width: 2.5; stroke-linecap: round; transition: stroke-dashoffset 1.4s cubic-bezier(.22,.8,.3,1); }
+      /* instrument scale: ticks light up to the current temperature, sweeping one after another */
+      .tk { stroke: color-mix(in srgb, var(--txt2) 30%, transparent); stroke-width: 1; stroke-linecap: round; transition: stroke .5s ease, opacity .5s ease; }
+      .tk.mj { stroke-width: 1.6; }
+      .tk.on { stroke: var(--tc); }
+      .g-mark { transition: transform 1.4s cubic-bezier(.22,.8,.3,1); }
+      .g-mark line { stroke: var(--txt); stroke-width: 2.5; stroke-linecap: round; }
+      /* compressor sweep: a short light trace runs along the scale while the compressor works;
+         its pace follows the running frequency, and it fades in/out with spin-up and coast-down */
+      .comet { fill: none; stroke-linecap: round; opacity: 0; }
+      .comet.c1 { stroke: var(--heat-raw); stroke-width: 3; }
+      .comet.c2 { stroke: color-mix(in srgb, var(--heat-raw) 55%, transparent); stroke-width: 2.5; }
+      .comet.c3 { stroke: color-mix(in srgb, var(--heat-raw) 22%, transparent); stroke-width: 2.5; }
+      .dial-in {
+        position: absolute; inset: 17.5%; z-index: 1; border-radius: 50%; background: var(--bg); box-shadow: var(--inset);
+        display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden;
       }
+      .glow { position: absolute; inset: 0; border-radius: 50%; opacity: 0; pointer-events: none;
+        background: radial-gradient(circle at 50% 62%, color-mix(in srgb, var(--heat-raw) 22%, transparent) 0%, transparent 70%);
+        transition: opacity 1.6s ease; }
+      .c-lbl, .sp-lbl, .m-lbl, .f-lbl, .tel-glbl {
+        font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: var(--txt2);
+      }
+      .c-lbl { position: relative; font-size: 11px; }
+      .c-val { position: relative; font-size: clamp(30px, 10cqw, 40px); font-weight: 650; line-height: 1.05; margin-top: 2px; font-variant-numeric: tabular-nums; transition: color .6s; }
+      .c-val sup { font-size: .45em; font-weight: 600; color: var(--txt2); }
+      .card.running .c-val { color: var(--heat); }
+      .c-trend { position: relative; display: flex; align-items: center; gap: 3px; margin-top: 3px; font-size: 12px; font-weight: 600; color: var(--txt2); }
+      .c-trend svg { width: 13px; height: 13px; }
+      .c-trend.up { color: var(--heat); } .c-trend.down { color: var(--info); } .c-trend.flat { color: var(--good); }
+      .setpoint { text-align: center; margin-bottom: 12px; }
+      .sp-val { font-size: 24px; font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; }
+      .sp-hint { font-size: 12px; color: var(--txt2); margin-top: 1px; }
 
-      /* Glow + spin + ripple */
-      .glow {
-        position: absolute; inset: 0; border-radius: 50%;
-        pointer-events: none; opacity: 0; transition: opacity 0.5s;
-      }
-      .glow.on { background: radial-gradient(circle, var(--heat-g) 0%, transparent 60%); opacity: 1; animation: gp 2.5s ease-in-out infinite; }
-      @keyframes gp { 0%,100%{opacity:.4;transform:scale(.97)} 50%{opacity:1;transform:scale(1.03)} }
+      /* ─── Water loop ─── */
+      .flow { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 14px; box-shadow: var(--inset-s); margin-bottom: 12px; }
+      .f-end { text-align: center; min-width: 64px; }
+      .f-val { font-size: 19px; font-weight: 700; line-height: 1.15; margin-top: 2px; font-variant-numeric: tabular-nums; }
+      .f-val small { font-size: 12px; font-weight: 600; color: var(--txt2); }
+      .f-end.sup .f-val { color: var(--heat); } .f-end.ret .f-val { color: var(--cool); }
+      .f-mid { position: relative; height: 34px; }
+      .f-mid svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+      .pipe-shell { fill: none; stroke: var(--bg); stroke-width: 9; stroke-linecap: round; filter: drop-shadow(1px 1px 1px var(--shadow-dark)) drop-shadow(-1px -1px 1px var(--shadow-light)); }
+      .pipe-base { fill: none; stroke: url(#pGrad); stroke-width: 4; stroke-linecap: round; opacity: .55; transition: opacity 1.2s ease; }
+      .card.running .pipe-base { opacity: .9; }
+      /* moving sheen = water travelling from supply to return; only while the pump delivers heat */
+      .pipe-sheen { fill: none; stroke: url(#pSheen); stroke-width: 4; stroke-linecap: round; opacity: 0; }
+      .f-dt { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 2px 9px; border-radius: 99px;
+        background: var(--bg); box-shadow: var(--raised-xs); font-size: 12.5px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
+      .f-dt.ok { color: var(--good); } .f-dt.mid { color: var(--warn); } .f-dt.bad { color: var(--error); }
 
-      .spin-ring {
-        position: absolute; inset: -3px; border-radius: 50%;
-        pointer-events: none; opacity: 0; transition: opacity 0.4s;
-      }
-      .spin-ring.on {
-        opacity: 1;
-        border: 2.5px solid transparent;
-        border-top-color: var(--heat);
-        border-right-color: color-mix(in srgb, var(--heat) 30%, transparent);
-        animation: sp 3s linear infinite;
-        filter: drop-shadow(0 0 3px var(--heat-g));
-      }
-      @keyframes sp { to { transform:rotate(360deg); } }
+      /* ─── Metrics ─── */
+      .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+      .metric { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 14px; background: var(--bg); box-shadow: var(--raised-s); cursor: pointer; min-width: 0; transition: box-shadow .2s; }
+      .metric:active { box-shadow: var(--inset-s); }
+      .m-ico { width: 36px; height: 36px; border-radius: 11px; flex: none; box-shadow: var(--inset-xs); display: flex; align-items: center; justify-content: center; color: var(--txt2); transition: color .5s; }
+      .m-ico svg { width: 20px; height: 20px; }
+      .metric.hot .m-ico { color: var(--heat); }
+      .m-txt { min-width: 0; flex: 1; }
+      .m-val { font-size: 19px; font-weight: 700; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+      .m-val small { font-size: 12px; font-weight: 600; color: var(--txt2); margin-left: 1px; }
+      .m-lbl { margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .m-bar { height: 4px; border-radius: 4px; margin-top: 5px; box-shadow: var(--inset-xs); overflow: hidden; }
+      .m-fill { height: 100%; border-radius: 4px; background: var(--water); transition: width 1.2s cubic-bezier(.22,.8,.3,1), background .5s; }
+      .m-fill.hot { background: var(--heat); } .m-fill.ok { background: var(--good); } .m-fill.mid { background: var(--warn); } .m-fill.bad { background: var(--error); }
 
-      /* Temp display */
-      .c-lbl {
-        font-size: clamp(9px, 2.5cqw, 11px); font-weight: 500; text-transform: uppercase;
-        letter-spacing: 1.5px; color: var(--txt2);
-        position: relative; z-index: 3;
-      }
-      .c-val {
-        font-size: clamp(32px, 10cqw, 56px); font-weight: 300; line-height: 1;
-        color: var(--txt); margin-top: 2px;
-        position: relative; z-index: 3; transition: color 0.3s;
-      }
-      .c-val sup { font-size: clamp(16px, 4cqw, 24px); font-weight: 400; }
-      .c-val.hot { color: var(--heat); }
-
-      .c-trend {
-        display: flex; align-items: center; gap: 4px;
-        margin-top: 6px; font-size: clamp(9px, 2.5cqw, 11px); font-weight: 500;
-        color: var(--txt2); position: relative; z-index: 3;
-      }
-      .c-trend svg { width: clamp(12px, 3.5cqw, 14px); aspect-ratio: 1; }
-      .c-trend.up { color: var(--heat); }
-      .c-trend.down { color: var(--info); }
-      .c-trend.flat { color: var(--good); }
-
-      /* ─── Setpoint below dial ─── */
-      .setpoint {
-        text-align: center; margin-bottom: clamp(16px, 5cqw, 22px);
-      }
-      .sp-lbl {
-        font-size: clamp(9px, 2.5cqw, 11px); font-weight: 500; text-transform: uppercase;
-        letter-spacing: 1.5px; color: var(--txt2);
-      }
-      .sp-val {
-        font-size: clamp(24px, 7cqw, 36px); font-weight: 600; color: var(--txt);
-        line-height: 1.3; transition: color 0.3s;
-      }
-      .sp-val.hot { color: var(--heat); }
-
-      /* ─── Sensor metrics ─── */
-      .metrics {
-        display: grid; grid-template-columns: 1fr 1fr;
-        gap: clamp(10px, 3cqw, 14px); margin-bottom: 18px;
-        width: 100%;
-      }
-      .metric {
-        background: var(--bg);
-        box-shadow: var(--raised-s);
-        border-radius: 18px; padding: clamp(12px, 3cqw, 16px);
-        display: flex; align-items: center; gap: clamp(8px, 2.5cqw, 12px);
-        transition: all 0.25s;
-        animation: pop 0.4s cubic-bezier(0.34,1.56,0.64,1) both;
-      }
-      .metric:nth-child(1){animation-delay:.1s}
-      .metric:nth-child(2){animation-delay:.15s}
-      .metric:nth-child(3){animation-delay:.2s}
-      .metric:nth-child(4){animation-delay:.25s}
-      @keyframes pop { 0%{opacity:0;transform:scale(.85)} 100%{opacity:1;transform:none} }
-      .metric:hover { transform: translateY(-2px); box-shadow: var(--raised); }
-      .metric:active { box-shadow: var(--inset-s); transform: none; }
-
-      .m-ico {
-        width: 44px; height: 44px; border-radius: 14px;
-        background: var(--bg); box-shadow: var(--inset-s);
-        display: flex; align-items: center; justify-content: center;
-        flex-shrink: 0; color: var(--txt2); transition: color 0.3s;
-      }
-      .m-ico svg { width: 22px; height: 22px; }
-      .m-ico.hot { color: var(--heat); }
-      .m-ico.ok { color: var(--good); }
-
-      .m-txt { min-width: 0; }
-      .m-val { font-size: clamp(15px, 4.5cqw, 20px); font-weight: 600; color: var(--txt); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .m-val.hot { color: var(--heat); }
-      .m-lbl { font-size: 12px; font-weight: 500; color: var(--txt2); margin-top: 2px; }
-
-      /* ΔT bar */
-      .dt-bar { 
-        height: 4px; border-radius: 4px; margin-top: 6px;
-        background: var(--bg); box-shadow: var(--inset-s);
-        overflow: hidden; 
-      }
-      .dt-fill {
-        height: 100%; border-radius: 4px;
-        transition: width 0.8s ease;
-      }
-      .dt-fill.ok { background: var(--good); }
-      .dt-fill.mid { background: var(--warn); }
-      .dt-fill.bad { background: var(--error); }
-
-      /* ─── Diagnostics & Graphs ─── */
-      .diag {
-        background: var(--bg); box-shadow: var(--inset);
-        border-radius: 18px; padding: 16px 20px;
-        margin-bottom: 18px; display: flex;
-        flex-direction: column;
-        align-items: flex-start; gap: 14px;
-        font-size: 13px; font-weight: 400; line-height: 1.6;
-        color: var(--txt2);
-        animation: pop 0.4s 0.3s both;
-        overflow: hidden;
-      }
+      /* ─── Diagnostics & graph ─── */
+      .diag { border-radius: 14px; box-shadow: var(--inset-s); padding: 12px 14px; margin-bottom: 12px; font-size: 13px; line-height: 1.45; color: var(--txt2); }
       .diag.hide { display: none; }
-      
-      .diag-row {
-        display: flex; width: 100%;
-        align-items: flex-start; gap: 14px;
-      }
-      .diag .d-i { font-size: 24px; flex-shrink: 0; line-height: 1; }
-      .diag .d-b { flex: 1; }
-      .diag .d-t { font-size: 14px; font-weight: 600; color: var(--txt); margin-bottom: 3px; }
-      .diag.good .d-t { color: var(--good); }
-      .diag.warn .d-t { color: var(--warn); }
-      .diag.info .d-t { color: var(--info); }
-      
-      .graph {
-        width: 100%;
-        border-top: 1px solid rgba(139, 143, 163, 0.15);
-        padding-top: 10px;
-        margin-top: 2px;
-        animation: fadeDown 0.4s ease-out;
-      }
-      .graph-hdr {
-        display: flex; justify-content: space-between;
-        font-size: 10px; text-transform: uppercase;
-        letter-spacing: 1px; color: var(--txt2); font-weight: 600;
-      }
-      @keyframes fadeDown { from{opacity:0;transform:translateY(-10px)} to{opacity:1;transform:none} }
+      .diag-row { display: flex; gap: 12px; align-items: flex-start; }
+      .d-i { font-size: 20px; line-height: 1; flex: none; }
+      .d-t { font-size: 14px; font-weight: 650; color: var(--txt); margin-bottom: 2px; }
+      .diag.good .d-t { color: var(--good); } .diag.warn .d-t { color: var(--warn); } .diag.info .d-t { color: var(--info); }
+      .graph { border-top: 1px solid color-mix(in srgb, var(--txt2) 18%, transparent); padding-top: 8px; margin-top: 10px; }
+      .graph-hdr { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; color: var(--txt2); }
 
-      /* ─── Tuya inquiry telemetry — theme-aware neumorphic language ─── */
-      .telemetry {
-        width: 100%; margin-bottom: 18px;
-        animation: pop 0.4s 0.35s both;
-      }
-      .tel-toggle {
-        width: 100%; display: flex; align-items: center; justify-content: space-between;
-        background: var(--bg); box-shadow: var(--raised-s); border: none;
-        border-radius: 16px; padding: 12px 18px; cursor: pointer;
-        font-size: 12px; font-weight: 600; text-transform: uppercase;
-        letter-spacing: 1.5px; color: var(--txt2); font-family: inherit;
-        transition: all 0.25s;
-      }
-      .tel-toggle:hover { transform: translateY(-2px); box-shadow: var(--raised); }
-      .tel-toggle:active { box-shadow: var(--inset-s); transform: none; }
-      .tel-toggle .arr { transition: transform 0.3s; }
+      /* ─── Telemetry ─── */
+      .telemetry { margin-bottom: 12px; }
+      .tel-toggle { width: 100%; display: flex; align-items: center; justify-content: space-between; border: none; cursor: pointer;
+        background: var(--bg); box-shadow: var(--raised-s); border-radius: 13px; padding: 10px 14px; font-family: inherit;
+        font-size: 12px; font-weight: 650; letter-spacing: .5px; text-transform: uppercase; color: var(--txt2); }
+      .tel-toggle:active { box-shadow: var(--inset-s); }
+      .tel-toggle .arr { transition: transform .3s; }
       .tel-toggle.open .arr { transform: rotate(180deg); }
-      .tel-body { display: none; margin-top: 12px; }
-      .tel-body.open { display: block; animation: fadeDown 0.4s ease-out; }
-      .tel-group { margin-bottom: 14px; }
-      .tel-group:last-child { margin-bottom: 0; }
-      .tel-glbl {
-        font-size: 10px; font-weight: 600; text-transform: uppercase;
-        letter-spacing: 1.5px; color: var(--txt2); margin: 0 4px 8px;
-      }
-      .tel-grid {
-        display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
-        gap: 10px;
-      }
-      .tel-cell {
-        background: var(--bg); box-shadow: var(--inset-s);
-        border-radius: 14px; padding: 10px 12px; min-width: 0;
-      }
-      .tel-cell .tv {
-        font-size: clamp(14px, 4cqw, 17px); font-weight: 600; color: var(--txt);
-        line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      }
-      .tel-cell .tv.hot { color: var(--heat); }
-      .tel-cell .tv.bad { color: var(--error); }
-      .tel-cell .tl {
-        font-size: 10px; font-weight: 500; color: var(--txt2); margin-top: 3px;
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      }
-      .tel-params-link {
-        width: 100%; margin-top: 4px; background: none; border: none;
-        color: var(--info); font-size: 11px; font-weight: 600; cursor: pointer;
-        font-family: inherit; padding: 6px 0; letter-spacing: 0.5px;
-      }
+      .tel-body { display: none; margin-top: 10px; }
+      .tel-body.open { display: block; animation: fadeDown .35s ease-out; }
+      @keyframes fadeDown { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+      .tel-group { margin-bottom: 12px; } .tel-group:last-child { margin-bottom: 0; }
+      .tel-glbl { margin: 0 4px 6px; }
+      .tel-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+      .tel-cell { border-radius: 12px; box-shadow: var(--inset-s); padding: 8px 10px; min-width: 0; }
+      .tel-cell .tv { font-size: 15px; font-weight: 700; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+      .tel-cell .tv.hot { color: var(--heat); } .tel-cell .tv.bad { color: var(--error); }
+      .tel-cell .tl { font-size: 12px; color: var(--txt2); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .tel-params-link { width: 100%; margin-top: 4px; background: none; border: none; color: var(--info); font-size: 12.5px; font-weight: 650; cursor: pointer; font-family: inherit; padding: 6px 0; }
 
-      /* ─── Presets ─── */
-      .presets {
-        display: flex; gap: 10px; justify-content: center;
-        flex-wrap: wrap; margin-bottom: 18px;
-        animation: pop 0.4s 0.35s both;
-      }
-      .chip {
-        padding: 10px 20px; border-radius: 14px; border: none;
-        background: var(--bg); box-shadow: var(--raised-s);
-        cursor: pointer; font-family: inherit;
-        font-size: 15px; font-weight: 500; color: var(--txt);
-        transition: all 0.2s; -webkit-tap-highlight-color: transparent;
-      }
-      .chip:hover { transform: translateY(-2px); }
-      .chip:active { box-shadow: var(--btn-p); transform: scale(0.95); }
-      .chip.on { color: var(--heat); box-shadow: var(--btn-p); font-weight: 600; }
-
-      /* ─── Mode row ─── */
-      .modes {
-        display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
-        animation: pop 0.4s 0.4s both;
-      }
-      .mbtn {
-        padding: 12px 16px; border-radius: 16px; border: none;
-        background: var(--bg); box-shadow: var(--raised-s);
-        cursor: pointer; font-family: inherit;
-        font-size: 13px; font-weight: 600;
-        text-transform: uppercase; letter-spacing: 0.5px;
-        color: var(--txt2); display: flex; align-items: center; justify-content: center; gap: 8px;
-        transition: all 0.2s; -webkit-tap-highlight-color: transparent;
-      }
-      .mbtn:hover { transform: translateY(-2px); }
-      .mbtn:active { box-shadow: var(--btn-p); transform: scale(0.95); }
-      .mbtn.on { box-shadow: var(--btn-p); }
+      /* ─── Presets & modes ─── */
+      .presets { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-bottom: 12px; }
+      .chip { padding: 8px 16px; border-radius: 12px; border: none; cursor: pointer; font-family: inherit; font-size: 15px; font-weight: 600;
+        background: var(--bg); box-shadow: var(--raised-s); color: var(--txt); transition: box-shadow .2s, color .3s; -webkit-tap-highlight-color: transparent; }
+      .chip:active { box-shadow: var(--inset-s); }
+      .chip.on { color: var(--heat); box-shadow: var(--inset-s); }
+      .modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; }
+      .mbtn { padding: 10px 12px; border-radius: 13px; border: none; cursor: pointer; font-family: inherit; font-size: 12.5px; font-weight: 700;
+        text-transform: uppercase; letter-spacing: .4px; background: var(--bg); box-shadow: var(--raised-s); color: var(--txt2);
+        display: flex; align-items: center; justify-content: center; gap: 7px; transition: box-shadow .2s, color .3s; -webkit-tap-highlight-color: transparent; }
+      .mbtn:active, .mbtn.on { box-shadow: var(--inset-s); }
       .mbtn.on.mode-heat, .mbtn.on.mode-heat-water { color: var(--heat); }
       .mbtn.on.mode-cool, .mbtn.on.mode-cool-water { color: var(--cool); }
       .mbtn.on.mode-water { color: var(--water); }
-      .mbtn.on.mode-off { color: var(--idle); }
+      .mbtn.on.mode-off { color: var(--txt); }
       .mbtn svg { width: 16px; height: 16px; }
 
-      /* ─── Error ─── */
-      .err {
-        padding: 40px; text-align: center; border-radius: 24px;
-        background: var(--bg); box-shadow: var(--raised);
+      .err { padding: 32px; text-align: center; border-radius: 18px; background: var(--bg); box-shadow: var(--raised); }
+      .err h3 { font-size: 17px; font-weight: 650; color: var(--error); margin-bottom: 6px; }
+      .err p { font-size: 13px; color: var(--txt2); }
+
+      @container (max-width: 340px) {
+        .metrics { grid-template-columns: 1fr; }
+        .f-end { min-width: 54px; }
       }
-      .err h3 { font-size: 18px; font-weight: 600; color: var(--error); margin-bottom: 8px; }
-      .err p { font-size: 14px; color: var(--txt2); }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation: none !important; transition: none !important; }
+      }
     `;
   }
 
   /* ══════════════════ RENDER ══════════════════ */
 
-  private _render() {
-    if (!this._config || !this._hass) {
-      this._root.innerHTML = `<style>${this._css()}</style><div class="card" style="text-align:center;padding:40px;color:var(--txt2);font-family:'Rubik',sans-serif">Загрузка…</div>`;
-      return;
-    }
-
+  /** Which metric tiles to show: live machine readings when the telemetry exists, else the classic four. */
+  private _metricDefs(live: ReturnType<AltalHeatpumpCard['_live']>) {
     const C = this._config;
-    const H = this._hass;
+    const out: { k: string; ico: string; lbl: string; graph: string | null }[] = [];
+    if (live.e.freq) out.push({ k: 'freq', ico: this._ico.rotor, lbl: 'Компрессор', graph: live.e.freq });
+    if (live.e.power) out.push({ k: 'power', ico: this._ico.bolt, lbl: 'Мощность', graph: live.e.power });
+    if (live.e.tank) out.push({ k: 'tank', ico: this._ico.tank, lbl: 'Бак ГВС', graph: live.e.tank });
+    if (live.e.outdoor) out.push({ k: 'outdoor', ico: this._ico.outdoor, lbl: 'Улица', graph: live.e.outdoor });
+    if (out.length >= 2) return out.slice(0, 4);
+    return [
+      { k: 'cur', ico: this._ico.thermo, lbl: 'Текущая', graph: C.current_temp_entity || null },
+      { k: 'tgt', ico: this._ico.target, lbl: 'Уставка', graph: C.target_temp_entity || null },
+      ...(C.delta_t_entity ? [{ k: 'dt', ico: this._ico.delta, lbl: 'ΔT', graph: C.delta_t_entity }] : []),
+      { k: 'heat', ico: this._ico.flame, lbl: 'Нагрев', graph: C.heating_entity || null },
+    ];
+  }
+
+  private _read() {
+    const C = this._config, H = this._hass;
     const cl = H.states[C.climate_entity];
-
-    if (!cl) {
-      this._root.innerHTML = `<style>${this._css()}</style><div class="err"><h3>Entity не найден</h3><p>${C.climate_entity}</p></div>`;
-      return;
-    }
-
     const curT = this._v(H, C.current_temp_entity) ?? (cl.attributes.current_temperature !== undefined ? parseFloat(cl.attributes.current_temperature) : null);
-    const tgtT = this._v(H, C.target_temp_entity) ?? parseFloat(cl.attributes.temperature);
-
-    // Optional entities graceful fallback
-    const dT = C.delta_t_entity ? this._v(H, C.delta_t_entity) : null;
-
-    // Determine heating state (from helper entity OR fallback to native hvac_action)
+    const tgtRaw = this._v(H, C.target_temp_entity) ?? parseFloat(cl.attributes.temperature);
+    const tgtT = Number.isFinite(tgtRaw) ? tgtRaw : null;
+    const live = this._live();
     const hvac = cl.state;
-    const isOff = hvac.toLowerCase() === 'off';
-    const hvacKind = getModeClass(hvac);
-    let isH = false;
-    if (C.heating_entity && H.states[C.heating_entity]) {
-      isH = H.states[C.heating_entity].state === 'on';
-    } else {
-      isH = cl.attributes.hvac_action === 'heating' ||
-        ((hvacKind === 'heat' || hvacKind === 'heat-water') && curT !== null && curT < tgtT);
-    }
-
-    const cTgt = this._pendingTarget ?? cl.attributes.temperature;
+    const heatEnt = C.heating_entity && H.states[C.heating_entity] ? (H.states[C.heating_entity].state === 'on' ? 'on' : 'off') : null;
+    const run: RunState = computeRunState({
+      off: hvac.toLowerCase() === 'off', freq: live.freq, power: live.power, heatingEntity: heatEnt,
+      hvacAction: cl.attributes.hvac_action ?? null, current: curT, target: tgtT,
+    });
     const modes: string[] = Array.isArray(cl.attributes.hvac_modes)
       ? cl.attributes.hvac_modes.filter((mode: unknown): mode is string => typeof mode === 'string')
       : ['heat', 'off'];
-    const name = C.name || cl.attributes.friendly_name || 'Altal Heat Pump';
-    const presets = C.quick_presets || [19, 20, 22, 24];
+    return { cl, curT, tgtT, live, hvac, run, modes };
+  }
 
-    const tr = this._trend();
-    const trIco = tr === 'up' ? this._ico.up : tr === 'down' ? this._ico.down : this._ico.stable;
-    const trTxt = tr === 'up' ? 'Растёт' : tr === 'down' ? 'Падает' : 'Стабильно';
-
-    let diag = this._dtDiag(dT, curT, tgtT, isH);
-
-    // Override diagnostics area if a graph is active
-    let activeGraphHtml = '';
-    if (this._activeGraphEntity) {
-      const g = this._cachedGraph[this._activeGraphEntity];
-      if (g) {
-        let title = 'График';
-        if (this._activeGraphEntity === C.current_temp_entity) title = 'Текущая температура';
-        if (this._activeGraphEntity === C.target_temp_entity) title = 'Уставка нагрева';
-        if (this._activeGraphEntity === C.delta_t_entity) title = 'Дельта T (ΔT)';
-
-        diag = { icon: '📊', title, text: 'Данные за последние 24 часа', cls: 'neutral' };
-
-        activeGraphHtml = `
-          <div class="graph">
-            <div class="graph-hdr"><span>${g.min.toFixed(1)}</span><span>${g.max.toFixed(1)}</span></div>
-            ${g.svg}
-          </div>
-        `;
-      } else {
-        diag = { icon: '⌛', title: 'Загрузка', text: 'Получение графиков из истории...', cls: 'neutral' };
-      }
+  private _render() {
+    if (!this._config || !this._hass) {
+      this._root.innerHTML = `<style>${this._css()}</style><div class="card" style="text-align:center;padding:40px;color:var(--txt2)">Загрузка…</div>`;
+      this._structKey = '';
+      return;
+    }
+    const C = this._config;
+    const cl = this._hass.states[C.climate_entity];
+    if (!cl) {
+      this._root.innerHTML = `<style>${this._css()}</style><div class="err"><h3>Entity не найден</h3><p>${C.climate_entity}</p></div>`;
+      this._structKey = '';
+      return;
     }
 
-    let bCls = 'off', bTxt = 'Выкл';
-    if (isH) { bCls = 'heating'; bTxt = 'Нагрев'; }
-    else if (!isOff) { bCls = 'idle'; bTxt = 'Ожидание'; }
+    const r = this._read();
+    const metrics = this._metricDefs(r.live);
+    const hasFlow = r.live.supply !== null || r.live.ret !== null;
+    const key = JSON.stringify([
+      r.modes, metrics.map(m => m.k), hasFlow, this._telOpen, this._paramsOpen,
+      this._activeGraphEntity, this._activeGraphEntity ? !!this._cachedGraph[this._activeGraphEntity] : false,
+      C.show_controls, C.show_presets, C.show_diagnostics, C.show_image, C.image, C.show_telemetry,
+      (C.quick_presets || []).join(','),
+    ]);
+    if (key !== this._structKey) {
+      this._build(r, metrics, hasFlow);
+      this._structKey = key;
+      this._lastTelHtml = this._telOpen ? this._telBody(this._hass) : '';
+    }
+    this._update(r, metrics);
+  }
 
+  /** Builds the DOM skeleton. Runs only when the layout itself changes. */
+  private _build(r: ReturnType<AltalHeatpumpCard['_read']>, metrics: ReturnType<AltalHeatpumpCard['_metricDefs']>, hasFlow: boolean) {
+    const C = this._config;
+    const showImg = C.show_image !== false;
+    const presets = C.quick_presets || [19, 20, 22, 24];
     const mIco: Record<string, string> = {
-      heat: this._ico.heat, hot: this._ico.heat,
-      cool: this._ico.cool, cold: this._ico.cool,
-      hotwater: this._ico.water, dhw: this._ico.water,
-      hot_hotwater: this._ico.heat, cold_hotwater: this._ico.cool,
+      heat: this._ico.heat, hot: this._ico.heat, cool: this._ico.cool, cold: this._ico.cool,
+      hotwater: this._ico.water, dhw: this._ico.water, hot_hotwater: this._ico.heat, cold_hotwater: this._ico.cool,
       auto: this._ico.auto, off: this._ico.off,
     };
-
-    const dtPct = dT != null ? Math.min(100, (dT / 12) * 100) : 0;
-    const dtCls = dT != null ? (dT >= 4 && dT <= 7 ? 'ok' : dT < 3 || dT > 9 ? 'bad' : 'mid') : 'ok';
-
-    const showImg = C.show_image !== false;
-    const dispT = cTgt != null ? parseFloat(cTgt).toFixed(1) : '—';
+    // 270° instrument scale. Thin value arc on r=88 (arc length 414.7 of 552.9), ticks just inside it.
+    const ARC = 414.69, CIRC = 552.92, TICKS = 55;
+    const ticks = Array.from({ length: TICKS }, (_, i) => {
+      const f = i / (TICKS - 1), ang = (135 + 270 * f) * Math.PI / 180, major = i % 9 === 0;
+      const r1 = major ? 72 : 75, r2 = 80;
+      const p = (r: number) => `${(100 + r * Math.cos(ang)).toFixed(2)} ${(100 + r * Math.sin(ang)).toFixed(2)}`;
+      const tc = `color-mix(in srgb, var(--heat) ${Math.round(f * 100)}%, var(--cool))`;
+      return `<path class="tk${major ? ' mj' : ''}" d="M${p(r1)} L${p(r2)}" style="--tc:${tc};transition-delay:${(i * 12)}ms"/>`;
+    }).join('');
+    const comet = (cls: string, len: number) =>
+      `<circle class="comet ${cls}" data-len="${len}" cx="100" cy="100" r="88" stroke-dasharray="${len} ${CIRC}" stroke-dashoffset="${len}" transform="rotate(135 100 100)"/>`;
+    const dial = `
+      <div class="dial" id="dial">
+        <svg class="gauge" viewBox="0 0 200 200" aria-hidden="true">
+          <defs><linearGradient id="gGrad" x1="0" y1="1" x2="1" y2="0">
+            <stop offset="0%" style="stop-color:var(--cool)"/><stop offset="100%" style="stop-color:var(--heat)"/></linearGradient></defs>
+          <g id="ticks">${ticks}</g>
+          <circle class="g-track" cx="100" cy="100" r="88" stroke-dasharray="${ARC} ${CIRC}" transform="rotate(135 100 100)"/>
+          <circle class="g-val" id="garc" cx="100" cy="100" r="88" stroke-dasharray="${ARC} ${CIRC}" stroke-dashoffset="${ARC}" transform="rotate(135 100 100)"/>
+          ${comet('c3', 70)}${comet('c2', 30)}${comet('c1', 9)}
+          <g class="g-mark" id="gmark" style="transform-origin:100px 100px"><line x1="182" y1="100" x2="194" y2="100"/></g>
+        </svg>
+        <div class="dial-in">
+          <div class="glow" id="glow"></div>
+          <span class="c-lbl">Сейчас</span>
+          <span class="c-val" id="cval">—<sup>°</sup></span>
+          <span class="c-trend" id="trend"></span>
+        </div>
+      </div>`;
 
     this._root.innerHTML = `
       <style>${this._css()}</style>
       <ha-card>
-        <div class="card">
-
-          <!-- TOP -->
+        <div class="card" id="card">
           <div class="top">
-            <div class="top-left">
-              ${showImg && C.image
-        ? `<div class="pump-thumb"><img src="${C.image}" alt="Heat Pump"/></div>`
-        : showImg
-          ? `<div class="pump-thumb empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" style="width: 40px; color: var(--txt2);"><path d="M4 14v-4a2 2 0 012-2h12a2 2 0 012 2v4M4 14a2 2 0 002 2h12a2 2 0 002-2M4 14v4a2 2 0 002 2h12a2 2 0 002-2v-4M8 11v6M16 11v6"/></svg></div>`
-          : ''}
-              <div class="top-info">
-                <div class="name">${name}</div>
-                <div class="status">Тепловой насос · ${getModeLabel(hvac)}</div>
-              </div>
-            </div>
+            ${showImg ? `<div class="pump-thumb">${C.image ? `<img src="${C.image}" alt=""/>` : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14v-4a2 2 0 012-2h12a2 2 0 012 2v4M4 14a2 2 0 002 2h12a2 2 0 002-2M4 14v4a2 2 0 002 2h12a2 2 0 002-2v-4M8 11v6M16 11v6"/></svg>`}</div>` : ''}
+            <div class="top-info"><div class="name" id="name"></div><div class="status" id="status"></div></div>
             <div class="top-right">
-              <div class="badge ${bCls}"><span class="dot"></span>${bTxt}</div>
-              <button class="pwr ${isOff ? '' : 'on'}" id="pwr">${this._ico.power}</button>
+              <div class="badge" id="badge"><span class="dot"></span><span id="btxt"></span></div>
+              <button class="pwr" id="pwr" aria-label="Питание">${this._ico.power}</button>
             </div>
           </div>
 
-          <!-- DIAL AREA: [-] [circle] [+] -->
-          ${C.show_controls !== false ? `
           <div class="dial-area">
-            <button class="side-btn" id="dn">${this._ico.minus}</button>
-            <div class="circle">
-              <div class="spin-ring ${isH ? 'on' : ''}"></div>
-              <div class="circle-in">
-                <div class="glow ${isH ? 'on' : ''}"></div>
-                <span class="c-lbl">Сейчас</span>
-                <span class="c-val ${isH ? 'hot' : ''}">${curT !== null ? curT.toFixed(1) : '—'}<sup>°</sup></span>
-                <span class="c-trend ${tr}">${trIco} ${trTxt}</span>
-              </div>
-            </div>
-            <button class="side-btn" id="up">${this._ico.plus}</button>
-          </div>
-
-          <!-- SETPOINT -->
-          <div class="setpoint">
-            <div class="sp-lbl">Уставка</div>
-            <div class="sp-val ${isH ? 'hot' : ''}">${dispT}°</div>
-          </div>
-          ` : `
-          <div class="dial-area">
-            <div class="circle">
-              <div class="spin-ring ${isH ? 'on' : ''}"></div>
-              <div class="circle-in">
-                <div class="glow ${isH ? 'on' : ''}"></div>
-                <span class="c-lbl">Сейчас</span>
-                <span class="c-val ${isH ? 'hot' : ''}">${curT !== null ? curT.toFixed(1) : '—'}<sup>°</sup></span>
-                <span class="c-trend ${tr}">${trIco} ${trTxt}</span>
-              </div>
-            </div>
+            ${C.show_controls !== false ? `<button class="side-btn" id="dn" aria-label="Уставка ниже">${this._ico.minus}</button>` : ''}
+            ${dial}
+            ${C.show_controls !== false ? `<button class="side-btn" id="up" aria-label="Уставка выше">${this._ico.plus}</button>` : ''}
           </div>
           <div class="setpoint">
             <div class="sp-lbl">Уставка</div>
-            <div class="sp-val ${isH ? 'hot' : ''}">${dispT}°</div>
+            <div class="sp-val" id="spval">—</div>
+            <div class="sp-hint" id="sphint"></div>
           </div>
-          `}
 
-          <!-- METRICS -->
+          ${hasFlow ? `
+          <div class="flow">
+            <div class="f-end sup"><div class="f-lbl">Подача</div><div class="f-val"><span id="fsup">—</span><small>°</small></div></div>
+            <div class="f-mid">
+              <svg viewBox="0 0 200 34" preserveAspectRatio="none" aria-hidden="true">
+                <defs>
+                  <linearGradient id="pGrad" gradientUnits="userSpaceOnUse" x1="6" y1="0" x2="194" y2="0">
+                    <stop offset="0%" style="stop-color:var(--heat)"/><stop offset="100%" style="stop-color:var(--cool)"/></linearGradient>
+                  <linearGradient id="pSheen" gradientUnits="userSpaceOnUse" spreadMethod="repeat" x1="0" y1="0" x2="64" y2="0">
+                    <stop offset="0%" style="stop-color:#fff;stop-opacity:0"/><stop offset="45%" style="stop-color:#fff;stop-opacity:0"/>
+                    <stop offset="62%" style="stop-color:#fff;stop-opacity:.75"/><stop offset="72%" style="stop-color:#fff;stop-opacity:0"/>
+                    <stop offset="100%" style="stop-color:#fff;stop-opacity:0"/></linearGradient>
+                </defs>
+                <path class="pipe-shell" d="M6 17 H194"/>
+                <path class="pipe-base" d="M6 17 H194"/>
+                <path class="pipe-sheen" id="sheen" d="M6 17 H194"/>
+              </svg>
+              <div class="f-dt" id="fdt">ΔT —</div>
+            </div>
+            <div class="f-end ret"><div class="f-lbl">Обратка</div><div class="f-val"><span id="fret">—</span><small>°</small></div></div>
+          </div>` : ''}
+
           <div class="metrics">
-            <div class="metric" id="m_cur" style="cursor: pointer" aria-label="График текущей температуры">
-              <div class="m-ico ${isH ? 'hot' : ''}">${this._ico.thermo}</div>
-              <div class="m-txt">
-                <div class="m-val">${curT !== null ? curT.toFixed(1) : '—'}°C</div>
-                <div class="m-lbl">Текущая</div>
-              </div>
-            </div>
-            <div class="metric" id="m_tgt" style="cursor: pointer" aria-label="График уставки">
-              <div class="m-ico">${this._ico.target}</div>
-              <div class="m-txt">
-                <div class="m-val">${tgtT !== null ? tgtT.toFixed(1) : '—'}°C</div>
-                <div class="m-lbl">Уставка</div>
-              </div>
-            </div>
-            ${C.delta_t_entity ? `
-            <div class="metric" id="m_dt" style="cursor: pointer" aria-label="График дельта T">
-              <div class="m-ico">${this._ico.delta}</div>
-              <div class="m-txt">
-                <div class="m-val">${dT !== null ? dT.toFixed(1) : '—'}°C</div>
-                <div class="m-lbl">ΔT</div>
-                <div class="dt-bar"><div class="dt-fill ${dtCls}" style="width:${dtPct}%"></div></div>
-              </div>
-            </div>
-            ` : ''}
-            <div class="metric" id="m_heat" style="cursor: pointer" aria-label="График статуса нагрева">
-              <div class="m-ico ${isH ? 'hot' : ''}">${this._ico.flame}</div>
-              <div class="m-txt">
-                <div class="m-val ${isH ? 'hot' : ''}">${isH ? 'Вкл' : 'Нет'}</div>
-                <div class="m-lbl">Нагрев</div>
-              </div>
-            </div>
+            ${metrics.map(m => `
+              <div class="metric" data-k="${m.k}" ${m.graph ? `data-graph="${m.graph}"` : ''} aria-label="${m.lbl}">
+                <div class="m-ico">${m.ico}</div>
+                <div class="m-txt"><div class="m-val">—</div><div class="m-lbl">${m.lbl}</div>
+                  ${m.k === 'tank' || m.k === 'dt' || m.k === 'power' || m.k === 'freq' ? `<div class="m-bar"><div class="m-fill" style="width:0%"></div></div>` : ''}</div>
+              </div>`).join('')}
           </div>
 
-          <!-- DIAGNOSTICS & GRAPHS -->
           ${this._renderTelemetry(this._hass)}
+
           ${C.show_diagnostics !== false || this._activeGraphEntity ? `
-            <div class="diag ${(!C.show_diagnostics && !this._activeGraphEntity) || (!this._activeGraphEntity && diag.cls === 'hide') ? 'hide' : diag.cls}">
-              <div class="diag-row">
-                <span class="d-i">${diag.icon}</span>
-                <div class="d-b">
-                  <div class="d-t">${diag.title}</div>
-                  ${diag.text ? `<div>${diag.text}</div>` : ''}
-                </div>
-              </div>
-              ${activeGraphHtml}
-            </div>
-          ` : ''}
+          <div class="diag hide" id="diag">
+            <div class="diag-row"><span class="d-i" id="dicon"></span>
+              <div><div class="d-t" id="dtitle"></div><div id="dtext"></div></div></div>
+            ${this._graphHtml()}
+          </div>` : ''}
 
-          <!-- PRESETS -->
           ${C.show_presets !== false ? `
-            <div class="presets">
-              ${presets.map(p => `<button class="chip ${cTgt != null && Math.abs(p - parseFloat(cTgt)) < 0.1 ? 'on' : ''}" data-t="${p}">${p}°</button>`).join('')}
-            </div>
-          ` : ''}
+          <div class="presets">${presets.map(p => `<button class="chip" data-t="${p}">${p}°</button>`).join('')}</div>` : ''}
 
-          <!-- MODES -->
           <div class="modes">
-            ${modes.map(m => {
-              const modeKey = m.toLowerCase();
-              const label = getModeLabel(m);
-              return `<button class="mbtn mode-${getModeClass(m)} ${modeKey === hvac.toLowerCase() ? 'on' : ''}" data-m="${m}" aria-label="${label}">${mIco[modeKey] || ''} ${label}</button>`;
-            }).join('')}
+            ${r.modes.map(m => `<button class="mbtn mode-${getModeClass(m)}" data-m="${m}" aria-label="${getModeLabel(m)}">${mIco[m.toLowerCase()] || ''} ${getModeLabel(m)}</button>`).join('')}
           </div>
-
         </div>
-      </ha-card>
-    `;
+      </ha-card>`;
 
+    this._comets = Array.from(this._root.querySelectorAll('.comet')) as SVGElement[];
+    this._sheen = this._root.getElementById('sheen') as SVGElement | null;
+    this._sheenGrad = this._root.getElementById('pSheen') as SVGElement | null;
+    this._numTweens = new WeakMap();
     this._bindAll();
   }
 
+  private _graphHtml(): string {
+    if (!this._activeGraphEntity) return '';
+    const g = this._cachedGraph[this._activeGraphEntity];
+    if (!g) return '';
+    return `<div class="graph"><div class="graph-hdr"><span>${g.min.toFixed(1)}</span><span>${g.max.toFixed(1)}</span></div>${g.svg}</div>`;
+  }
+
+  /** Patches values into the existing DOM. Runs on every state push; never replays entry animations. */
+  private _update(r: ReturnType<AltalHeatpumpCard['_read']>, metrics: ReturnType<AltalHeatpumpCard['_metricDefs']>) {
+    const C = this._config, $ = (id: string) => this._root.getElementById(id);
+    const { cl, curT, tgtT, live, hvac, run } = r;
+    const card = $('card');
+    if (!card) return;
+    card.className = `card ${run.kind}`;
+
+    this._text($('name'), C.name || cl.attributes.friendly_name || 'Altal Heat Pump');
+    this._text($('status'), `Тепловой насос · ${getModeLabel(hvac)}`);
+    const badge = $('badge');
+    if (badge) badge.className = `badge ${run.kind}`;
+    this._text($('btxt'), run.label);
+    $('pwr')?.classList.toggle('on', run.kind !== 'off');
+
+    // dial
+    const sMin = C.scale_min ?? 20, sMax = C.scale_max ?? 60, ARC = 414.69;
+    const frac = scaleFraction(curT, sMin, sMax);
+    this._num($('cval'), curT, 1, '<sup>°</sup>');
+    $('garc')?.setAttribute('stroke-dashoffset', String(ARC * (1 - frac)));
+    const tks = this._root.querySelectorAll('#ticks .tk');
+    tks.forEach((tk, i) => tk.classList.toggle('on', curT !== null && i / (tks.length - 1) <= frac + 1e-6));
+    const mark = $('gmark');
+    if (mark) mark.style.transform = `rotate(${135 + 270 * scaleFraction(this._pendingTarget ?? tgtT, sMin, sMax)}deg)`;
+    const tr = this._trend();
+    const trend = $('trend');
+    if (trend && trend.dataset.tr !== tr) {
+      trend.dataset.tr = tr;
+      trend.className = `c-trend ${tr}`;
+      trend.innerHTML = `${tr === 'up' ? this._ico.up : tr === 'down' ? this._ico.down : this._ico.stable} ${tr === 'up' ? 'Растёт' : tr === 'down' ? 'Падает' : 'Стабильно'}`;
+    }
+    const glow = $('glow');
+    if (glow) glow.style.opacity = run.running ? String(0.35 + 0.65 * Math.min(1, (live.power ?? 4) / 8)) : '0';
+
+    const shownTgt = this._pendingTarget ?? tgtT;
+    const sp = $('spval');
+    if (sp && this._pendingTarget === null) sp.textContent = shownTgt !== null ? `${shownTgt.toFixed(1)}°` : '—';
+    const gap = curT !== null && shownTgt !== null ? shownTgt - curT : null;
+    this._text($('sphint'), run.kind === 'off' ? 'насос выключен' : gap === null ? '' :
+      Math.abs(gap) < 0.5 ? 'вода на уставке' : gap > 0 ? `до уставки +${gap.toFixed(1)}°` : `выше уставки на ${(-gap).toFixed(1)}°`);
+
+    // water loop
+    this._num($('fsup'), live.supply, 1);
+    this._num($('fret'), live.ret, 1);
+    const fdt = $('fdt');
+    if (fdt) {
+      fdt.className = `f-dt ${run.running ? deltaClass(live.dt) : 'none'}`;
+      fdt.textContent = live.dt !== null ? `ΔT ${live.dt.toFixed(1)}°` : 'ΔT —';
+    }
+
+    // metric tiles
+    for (const m of metrics) {
+      const el = this._root.querySelector(`.metric[data-k="${m.k}"]`) as HTMLElement | null;
+      if (!el) continue;
+      const val = el.querySelector('.m-val'), fill = el.querySelector('.m-fill') as HTMLElement | null;
+      let hot = false;
+      switch (m.k) {
+        case 'freq': {
+          this._num(val, live.freq, 0, '<small>Гц</small>');
+          hot = run.running;
+          if (fill) { fill.className = 'm-fill hot'; fill.style.width = `${scaleFraction(live.freq, 0, 90) * 100}%`; }
+          break;
+        }
+        case 'power':
+          this._num(val, live.power, 1, '<small>кВт</small>');
+          hot = run.running;
+          if (fill) { fill.className = 'm-fill hot'; fill.style.width = `${scaleFraction(live.power, 0, 12) * 100}%`; }
+          break;
+        case 'tank': {
+          this._num(val, live.tank, 1, '<small>°C</small>');
+          const reached = live.tank !== null && live.tankSet !== null && live.tank >= live.tankSet;
+          if (fill) { fill.className = `m-fill ${reached ? 'ok' : ''}`; fill.style.width = `${scaleFraction(live.tank, 10, Math.max(40, (live.tankSet ?? 50) + 5)) * 100}%`; }
+          break;
+        }
+        case 'outdoor': this._num(val, live.outdoor, 1, '<small>°C</small>'); break;
+        case 'cur': this._num(val, curT, 1, '<small>°C</small>'); hot = run.running; break;
+        case 'tgt': this._num(val, shownTgt, 1, '<small>°C</small>'); break;
+        case 'dt':
+          this._num(val, live.dt, 1, '<small>°C</small>');
+          if (fill) { fill.className = `m-fill ${deltaClass(live.dt)}`; fill.style.width = `${scaleFraction(live.dt, 0, 12) * 100}%`; }
+          break;
+        case 'heat': this._text(val, run.running ? 'Вкл' : 'Нет'); hot = run.running; break;
+      }
+      el.classList.toggle('hot', hot);
+    }
+
+    // diagnostics (text only; the graph block is part of the structure)
+    const diagEl = $('diag');
+    if (diagEl) {
+      let d = this._dtDiag(live.dt, curT, tgtT, run.running);
+      if (this._activeGraphEntity) {
+        const m = metrics.find(x => x.graph === this._activeGraphEntity);
+        d = this._cachedGraph[this._activeGraphEntity]
+          ? { icon: '📊', title: m ? m.lbl : 'График', text: 'Последние 24 часа · нажмите плитку ещё раз, чтобы скрыть', cls: 'neutral' }
+          : { icon: '⌛', title: 'Загрузка', text: 'Получение истории…', cls: 'neutral' };
+      }
+      const hidden = !this._activeGraphEntity && (C.show_diagnostics === false || d.cls === 'hide');
+      diagEl.className = `diag ${hidden ? 'hide' : d.cls}`;
+      this._text($('dicon'), d.icon);
+      this._text($('dtitle'), d.title);
+      this._text($('dtext'), d.text);
+    }
+
+    // presets & modes
+    this._root.querySelectorAll('.chip').forEach(el => {
+      const t = parseFloat((el as HTMLElement).dataset.t || 'NaN');
+      el.classList.toggle('on', shownTgt !== null && Math.abs(t - shownTgt) < 0.1);
+    });
+    this._root.querySelectorAll('.mbtn').forEach(el =>
+      el.classList.toggle('on', ((el as HTMLElement).dataset.m || '').toLowerCase() === hvac.toLowerCase()));
+
+    // telemetry: swap only the body contents, and only when they actually changed
+    if (this._telOpen) {
+      const body = this._root.querySelector('.tel-body');
+      const html = this._telBody(this._hass);
+      if (body && html !== this._lastTelHtml) {
+        body.innerHTML = html;
+        this._lastTelHtml = html;
+        this._root.getElementById('tel_params')?.addEventListener('click', (e) => this._toggleParams(e));
+      }
+    }
+
+    // animation targets
+    this._anim.tgtSpd = this._reduceMotion ? 0 : rotorSpeed(run.running, live.freq);
+    this._anim.tgtFlow = this._reduceMotion ? 0 : flowSpeed(run.running, live.power);
+    this._kick();
+  }
+
+  /* ── In-place DOM helpers ───────────────── */
+
+  private _text(el: Element | null, s: string) {
+    if (el && el.textContent !== s) el.textContent = s;
+  }
+
+  /** Writes a number, easing from the previous value so changes read as motion, not a flash. */
+  private _num(el: Element | null, value: number | null, decimals: number, suffix = '') {
+    if (!el) return;
+    if (value === null || !Number.isFinite(value)) {
+      const s = `—${suffix}`;
+      if (el.innerHTML !== s) el.innerHTML = s;
+      this._numTweens.delete(el);
+      return;
+    }
+    const prev = this._numTweens.get(el);
+    const draw = (x: number) => { el.innerHTML = `${x.toFixed(decimals)}${suffix}`; };
+    if (!prev || this._reduceMotion) {
+      draw(value);
+      this._numTweens.set(el, { from: value, to: value, raf: 0 });
+      return;
+    }
+    if (prev.to === value) return;
+    if (prev.raf) cancelAnimationFrame(prev.raf);
+    const from = prev.raf ? prev.from : prev.to, start = performance.now(), dur = 700;
+    const st = { from, to: value, raf: 0 };
+    const step = (t: number) => {
+      const p = Math.min(1, (t - start) / dur), e = 1 - Math.pow(1 - p, 3);
+      draw(from + (value - from) * e);
+      st.from = from + (value - from) * e;
+      st.raf = p < 1 ? requestAnimationFrame(step) : 0;
+    };
+    st.raf = requestAnimationFrame(step);
+    this._numTweens.set(el, st);
+  }
+
+  /* ── Animation loop: compressor sweep and water flow ── */
+
+  private _kick() {
+    const a = this._anim;
+    if (a.raf || !this.isConnected) return;
+    if (!a.tgtSpd && !a.tgtFlow && a.spd < 0.5 && a.flowSpd < 0.5) { this._paintAnim(); return; }
+    a.raf = requestAnimationFrame(this._tick);
+  }
+
+  private _tick = (t: number) => {
+    const a = this._anim;
+    const dt = a.last ? Math.min(0.1, (t - a.last) / 1000) : 0;
+    a.last = t;
+    // first-order lag ≈ 1.6 s: the compressor spins up and coasts down instead of snapping
+    const k = 1 - Math.exp(-dt / 1.6);
+    a.spd += (a.tgtSpd - a.spd) * k;
+    a.flowSpd += (a.tgtFlow - a.flowSpd) * k;
+    a.rot = (a.rot + a.spd * dt) % 360;
+    // sweep position along the scale: one pass per few seconds, calm at low frequency, brisker near full load
+    a.sweep = (a.sweep + (a.spd / 360) * (414.69 / 4) * dt) % (414.69 + 80);
+    a.flow = (a.flow + a.flowSpd * dt) % 2000;
+    this._paintAnim();
+    if (!a.tgtSpd && !a.tgtFlow && a.spd < 0.5 && a.flowSpd < 0.5) {
+      a.spd = 0; a.flowSpd = 0; a.raf = 0; a.last = 0;
+      this._paintAnim();
+      return;
+    }
+    a.raf = requestAnimationFrame(this._tick);
+  };
+
+  private _paintAnim() {
+    const a = this._anim, ARC = 414.69;
+    const head = a.sweep;
+    const vis = Math.min(1, a.spd / 120);
+    for (const c of this._comets) {
+      const len = Number(c.getAttribute('data-len') || 0);
+      c.setAttribute('stroke-dashoffset', (len - head).toFixed(1));
+      c.style.opacity = String(vis * (head > ARC ? Math.max(0, 1 - (head - ARC) / 40) : 1));
+    }
+    if (this._sheenGrad) {
+      const x = (a.flow % 64).toFixed(1);
+      this._sheenGrad.setAttribute('x1', x);
+      this._sheenGrad.setAttribute('x2', (Number(x) + 64).toFixed(1));
+    }
+    if (this._sheen) this._sheen.style.opacity = String(Math.min(1, a.flowSpd / 18));
+  }
+
   /* ── Events ───────────────────────────── */
+
+  private _toggleParams(e: Event) {
+    e.preventDefault(); e.stopPropagation();
+    this._paramsOpen = !this._paramsOpen;
+    this._render();
+  }
 
   private _bindAll() {
     const $ = (id: string) => this._root.getElementById(id);
@@ -1128,35 +1209,18 @@ class AltalHeatpumpCard extends HTMLElement {
     $('up')?.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); this._adjust(1); });
     $('pwr')?.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); this._togglePower(); });
 
-    // Telemetry disclosure toggles
     $('tel_toggle')?.addEventListener('click', (e) => {
       e.preventDefault(); e.stopPropagation();
       this._telOpen = !this._telOpen;
       this._render();
     });
-    $('tel_params')?.addEventListener('click', (e) => {
-      e.preventDefault(); e.stopPropagation();
-      this._paramsOpen = !this._paramsOpen;
-      this._render();
-    });
+    $('tel_params')?.addEventListener('click', (e) => this._toggleParams(e));
 
-    // Metric Click Listeners (Graphs)
-    $('m_cur')?.addEventListener('click', () => {
-      const C = this._config;
-      if (C.current_temp_entity) this._fetchGraph(C.current_temp_entity, 'Текущая');
-    });
-    $('m_tgt')?.addEventListener('click', () => {
-      const C = this._config;
-      if (C.target_temp_entity) this._fetchGraph(C.target_temp_entity, 'Уставка');
-    });
-    $('m_dt')?.addEventListener('click', () => {
-      const C = this._config;
-      if (C.delta_t_entity) this._fetchGraph(C.delta_t_entity, 'ΔT');
-    });
-    $('m_heat')?.addEventListener('click', () => {
-      const C = this._config;
-      if (C.heating_entity) this._fetchGraph(C.heating_entity, 'Нагрев');
-    });
+    this._root.querySelectorAll('.metric[data-graph]').forEach(el =>
+      el.addEventListener('click', () => {
+        const id = (el as HTMLElement).dataset.graph;
+        if (id) this._fetchGraph(id, (el as HTMLElement).getAttribute('aria-label') || '');
+      }));
 
     this._root.querySelectorAll('.chip').forEach(el =>
       el.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); this._preset(parseFloat((e.currentTarget as HTMLElement).dataset.t || '20')); })
@@ -1197,7 +1261,7 @@ if (!customElements.get('altal-heatpump-card-pro')) {
 });
 
 console.info(
-  '%c ALTAL-HEATER-CARD %c v4.4.0 ',
+  '%c ALTAL-HEATER-CARD PRO %c v4.5.0 ',
   'color: white; background: #e6642f; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 8px;',
   'color: #e6642f; background: #e3e6ec; font-weight: bold; border-radius: 0 4px 4px 0; padding: 2px 8px;'
 );
