@@ -21,6 +21,8 @@ interface CardConfig {
   animation_color?: string;
   telemetry_prefix?: string;
   show_telemetry?: boolean;
+  mode_entity?: string;
+  show_cooling?: boolean;
 }
 
 class AltalHeatpumpCardEditor extends HTMLElement {
@@ -135,6 +137,14 @@ class AltalHeatpumpCardEditor extends HTMLElement {
             <input type="text" id="delta_t_entity" value="${C.delta_t_entity || ''}" placeholder="sensor.altal_delta_t">
           </div>
           <div class="row">
+            <label>Режим работы (Tuya Local)</label>
+            <input type="text" id="mode_entity" value="${C.mode_entity || ''}" placeholder="авто: select.…_combined_mode">
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">Показывать режимы охлаждения</span>
+            <div class="toggle ${C.show_cooling ? 'on' : ''}" data-field="show_cooling"><div class="knob"></div></div>
+          </div>
+          <div class="row">
             <label>Статус нагрева</label>
             <input type="text" id="heating_entity" value="${C.heating_entity || ''}" placeholder="binary_sensor.altal_heating">
           </div>
@@ -205,7 +215,7 @@ class AltalHeatpumpCardEditor extends HTMLElement {
     // Text inputs
     ['name', 'climate_entity', 'current_temp_entity', 'target_temp_entity',
       'delta_t_entity', 'heating_entity', 'image', 'text_color', 'animation_color',
-      'telemetry_prefix'].forEach(field => {
+      'telemetry_prefix', 'mode_entity'].forEach(field => {
         const input = this._root.getElementById(field) as HTMLInputElement;
         input?.addEventListener('change', (e) => {
           const val = (e.target as HTMLInputElement).value;
@@ -229,7 +239,7 @@ class AltalHeatpumpCardEditor extends HTMLElement {
         const field = (toggle as HTMLElement).dataset.field as keyof CardConfig;
         const current = this._config[field];
         const newVal = current === false ? true : (current === true || current === undefined ? false : !current);
-        (this._config as any)[field] = field === 'compact' ? !this._config.compact : newVal;
+        (this._config as any)[field] = field === 'compact' || field === 'show_cooling' ? !this._config[field] : newVal;
         this._dispatch();
         this._render();
       });

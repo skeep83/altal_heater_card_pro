@@ -34,6 +34,18 @@ const REACHED_BAND = 0.5;
  * not by "water is colder than the setpoint": a heat pump often sits idle
  * between cycles while still below target, and the card must not animate then.
  */
+/**
+ * "локально · 20 с" style freshness text for the telemetry daemon's last poll.
+ * Returns an empty string when there is no timestamp to judge.
+ */
+export function freshnessText(source: string | null | undefined, ageSeconds: number | null): string {
+  if (ageSeconds === null || !Number.isFinite(ageSeconds) || ageSeconds < 0) return '';
+  const where = source === 'local' ? 'локально' : source === 'cloud' ? 'облако' : 'данные';
+  if (ageSeconds >= 600) return `${where} · нет данных ${Math.round(ageSeconds / 60)} мин`;
+  if (ageSeconds >= 90) return `${where} · ${Math.round(ageSeconds / 60)} мин назад`;
+  return `${where} · ${Math.max(1, Math.round(ageSeconds))} с назад`;
+}
+
 export function computeRunState(i: RunInputs): RunState {
   if (i.off) return { kind: 'off', running: false, demand: false, label: 'Выкл' };
 

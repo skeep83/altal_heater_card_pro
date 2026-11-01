@@ -1,4 +1,4 @@
-class I extends HTMLElement {
+class U extends HTMLElement {
   constructor() {
     super(), this._root = this.attachShadow({ mode: "open" });
   }
@@ -103,6 +103,14 @@ class I extends HTMLElement {
             <input type="text" id="delta_t_entity" value="${t.delta_t_entity || ""}" placeholder="sensor.altal_delta_t">
           </div>
           <div class="row">
+            <label>Режим работы (Tuya Local)</label>
+            <input type="text" id="mode_entity" value="${t.mode_entity || ""}" placeholder="авто: select.…_combined_mode">
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">Показывать режимы охлаждения</span>
+            <div class="toggle ${t.show_cooling ? "on" : ""}" data-field="show_cooling"><div class="knob"></div></div>
+          </div>
+          <div class="row">
             <label>Статус нагрева</label>
             <input type="text" id="heating_entity" value="${t.heating_entity || ""}" placeholder="binary_sensor.altal_heating">
           </div>
@@ -178,19 +186,20 @@ class I extends HTMLElement {
       "image",
       "text_color",
       "animation_color",
-      "telemetry_prefix"
+      "telemetry_prefix",
+      "mode_entity"
     ].forEach((i) => {
-      this._root.getElementById(i)?.addEventListener("change", (r) => {
-        const s = r.target.value;
-        this._config = { ...this._config, [i]: s || void 0 }, this._dispatch();
+      this._root.getElementById(i)?.addEventListener("change", (s) => {
+        const a = s.target.value;
+        this._config = { ...this._config, [i]: a || void 0 }, this._dispatch();
       });
     }), this._root.getElementById("quick_presets")?.addEventListener("change", (i) => {
-      const o = i.target.value.split(",").map((r) => parseFloat(r.trim())).filter((r) => !isNaN(r));
+      const o = i.target.value.split(",").map((s) => parseFloat(s.trim())).filter((s) => !isNaN(s));
       this._config = { ...this._config, quick_presets: o.length ? o : void 0 }, this._dispatch();
     }), this._root.querySelectorAll(".toggle").forEach((i) => {
       i.addEventListener("click", () => {
-        const o = i.dataset.field, r = this._config[o], s = r === !1 ? !0 : r === !0 || r === void 0 ? !1 : !r;
-        this._config[o] = o === "compact" ? !this._config.compact : s, this._dispatch(), this._render();
+        const o = i.dataset.field, s = this._config[o], a = s === !1 ? !0 : s === !0 || s === void 0 ? !1 : !s;
+        this._config[o] = o === "compact" || o === "show_cooling" ? !this._config[o] : a, this._dispatch(), this._render();
       });
     });
   }
@@ -202,8 +211,8 @@ class I extends HTMLElement {
     }));
   }
 }
-customElements.get("altal-heatpump-card-editor") || customElements.define("altal-heatpump-card-editor", I);
-const N = {
+customElements.get("altal-heatpump-card-editor") || customElements.define("altal-heatpump-card-editor", U);
+const W = {
   heat: "Отопление",
   hot: "Отопление",
   cool: "Охлаждение",
@@ -214,7 +223,7 @@ const N = {
   cold_hotwater: "Охлаждение + ГВС",
   auto: "Авто",
   off: "Выкл"
-}, O = {
+}, K = {
   heat: "heat",
   hot: "heat",
   cool: "cool",
@@ -226,27 +235,53 @@ const N = {
   auto: "auto",
   off: "off"
 };
-function q(a) {
-  return N[a.toLowerCase()] ?? a;
+function L(r) {
+  return W[r.toLowerCase()] ?? r;
 }
-function P(a) {
-  return O[a.toLowerCase()] ?? "other";
+function j(r) {
+  return K[r.toLowerCase()] ?? "other";
 }
-function D(a, t) {
-  const e = a.filter((o) => typeof o == "string" && o.toLowerCase() !== "off");
+const Y = {
+  "heating only": "hot",
+  "cooling only": "cold",
+  "hot water only": "hotwater",
+  "hot water + heating": "hot_hotwater",
+  "hot water + cooling": "cold_hotwater"
+};
+function B(r) {
+  return typeof r != "string" ? null : Y[r.trim().toLowerCase()] ?? null;
+}
+function N(r) {
+  return typeof r == "string" && /^(cold|cool)/.test(r.toLowerCase());
+}
+function X(r, t, e = !1) {
+  if (!Array.isArray(r)) return [];
+  const i = B(t);
+  return r.filter((o) => typeof o == "string").map((o) => ({ option: o, code: B(o) })).filter((o) => o.code !== null).filter((o) => e || !N(o.code) || o.code === i);
+}
+function H(r, t) {
+  const e = r.split(".")[1] ?? "";
+  for (const i of [e, e.replace(/_\d+$/, "")]) {
+    const o = `select.${i}_combined_mode`;
+    if (i && t[o]) return o;
+  }
+  return null;
+}
+function Q(r, t) {
+  const e = r.filter((o) => typeof o == "string" && o.toLowerCase() !== "off");
   if (!e.length) return null;
   if (t) {
-    const o = e.find((r) => r.toLowerCase() === t.toLowerCase());
+    const o = e.find((s) => s.toLowerCase() === t.toLowerCase());
     if (o) return o;
   }
   const i = ["hot", "heat", "hot_hotwater", "hotwater", "dhw", "auto", "heat_cool", "cold", "cool", "cold_hotwater"];
   for (const o of i) {
-    const r = e.find((s) => s.toLowerCase() === o);
-    if (r) return r;
+    const s = e.find((a) => a.toLowerCase() === o);
+    if (s) return s;
   }
   return e[0];
 }
-const R = {
+const J = {
   c01: "Version No.",
   c02: "Ambient Temp.",
   c03: "Water Tank Temp.",
@@ -277,7 +312,7 @@ const R = {
   c29: "MCU2 Version",
   c30: "MCU3 Version",
   c31: "Error History"
-}, V = {
+}, Z = {
   c01: "service",
   c02: "other",
   c03: "dhw",
@@ -309,21 +344,21 @@ const R = {
   c30: "service",
   c31: "service"
 };
-function G(a) {
-  const t = String(a).trim().match(/^c?0*(\d{1,2})$/i);
+function O(r) {
+  const t = String(r).trim().match(/^c?0*(\d{1,2})$/i);
   if (!t) return null;
   const e = Number(t[1]);
   return !Number.isInteger(e) || e < 1 || e > 31 ? null : `c${String(e).padStart(2, "0")}`;
 }
-function U(a) {
-  const t = G(a);
-  return t ? R[t] ?? null : null;
+function tt(r) {
+  const t = O(r);
+  return t ? J[t] ?? null : null;
 }
-function W(a) {
-  const t = G(a);
-  return t ? V[t] ?? null : null;
+function et(r) {
+  const t = O(r);
+  return t ? Z[t] ?? null : null;
 }
-const K = "Допустимые режимы системы", Y = {
+const ot = "Допустимые режимы системы", it = {
   0: "Охлаждение",
   1: "Охлаждение + отопление",
   2: "Отопление",
@@ -332,42 +367,47 @@ const K = "Допустимые режимы системы", Y = {
   5: "Отопление + ГВС",
   6: "Охлаждение + ГВС"
 };
-function j(a) {
-  const t = String(a).trim().toLowerCase();
+function D(r) {
+  const t = String(r).trim().toLowerCase();
   return t === "c41" || t === "d41" || t === "41";
 }
-function X(a) {
-  return j(a) ? K : null;
+function st(r) {
+  return D(r) ? ot : null;
 }
-function Q(a, t) {
-  return j(a) ? Y[String(t).trim()] ?? null : null;
+function rt(r, t) {
+  return D(r) ? it[String(t).trim()] ?? null : null;
 }
-const J = 0.5;
-function Z(a) {
-  if (a.off) return { kind: "off", running: !1, demand: !1, label: "Выкл" };
-  const t = a.current !== null && a.target !== null && a.current < a.target - J;
+const at = 0.5;
+function nt(r, t) {
+  if (t === null || !Number.isFinite(t) || t < 0) return "";
+  const e = r === "local" ? "локально" : r === "cloud" ? "облако" : "данные";
+  return t >= 600 ? `${e} · нет данных ${Math.round(t / 60)} мин` : t >= 90 ? `${e} · ${Math.round(t / 60)} мин назад` : `${e} · ${Math.max(1, Math.round(t))} с назад`;
+}
+function lt(r) {
+  if (r.off) return { kind: "off", running: !1, demand: !1, label: "Выкл" };
+  const t = r.current !== null && r.target !== null && r.current < r.target - at;
   let e;
-  return a.heatingEntity !== null ? e = a.heatingEntity === "on" : a.freq !== null || a.power !== null ? e = (a.freq ?? 0) > 0 || (a.power ?? 0) > 0.05 : a.hvacAction ? e = a.hvacAction === "heating" || a.hvacAction === "cooling" : e = t, e ? { kind: "running", running: e, demand: t, label: "Работает" } : t ? { kind: "waiting", running: e, demand: t, label: "Ожидание" } : { kind: "reached", running: e, demand: t, label: "Уставка достигнута" };
+  return r.heatingEntity !== null ? e = r.heatingEntity === "on" : r.freq !== null || r.power !== null ? e = (r.freq ?? 0) > 0 || (r.power ?? 0) > 0.05 : r.hvacAction ? e = r.hvacAction === "heating" || r.hvacAction === "cooling" : e = t, e ? { kind: "running", running: e, demand: t, label: "Работает" } : t ? { kind: "waiting", running: e, demand: t, label: "Ожидание" } : { kind: "reached", running: e, demand: t, label: "Уставка достигнута" };
 }
-function tt(a, t) {
-  if (!a) return 0;
+function ct(r, t) {
+  if (!r) return 0;
   const e = t !== null && t > 0 ? t : 30;
   return Math.max(40, Math.min(420, e * 6));
 }
-function et(a, t) {
-  if (!a) return 0;
+function dt(r, t) {
+  if (!r) return 0;
   const e = t !== null && t > 0 ? t : 3;
   return Math.max(14, Math.min(90, 12 + e * 7));
 }
-function A(a, t, e) {
-  return a === null || !Number.isFinite(a) || e <= t ? 0 : Math.max(0, Math.min(1, (a - t) / (e - t)));
+function z(r, t, e) {
+  return r === null || !Number.isFinite(r) || e <= t ? 0 : Math.max(0, Math.min(1, (r - t) / (e - t)));
 }
-function F(a) {
-  return a === null || !Number.isFinite(a) ? "none" : a >= 4 && a <= 7 ? "ok" : a < 3 || a > 9 ? "bad" : "mid";
+function I(r) {
+  return r === null || !Number.isFinite(r) ? "none" : r >= 4 && r <= 7 ? "ok" : r < 3 || r > 9 ? "bad" : "mid";
 }
-class B extends HTMLElement {
+class P extends HTMLElement {
   constructor() {
-    super(), this._history = [], this._pendingTarget = null, this._svcTimer = null, this._cachedGraph = {}, this._activeGraphEntity = null, this._telOpen = !1, this._paramsOpen = !1, this._lastActiveMode = null, this._structKey = "", this._lastTelHtml = "", this._numTweens = /* @__PURE__ */ new WeakMap(), this._anim = { rot: 0, sweep: 0, flow: 0, spd: 0, flowSpd: 0, tgtSpd: 0, tgtFlow: 0, raf: 0, last: 0 }, this._comets = [], this._sheen = null, this._sheenGrad = null, this._reduceMotion = typeof matchMedia == "function" && matchMedia("(prefers-reduced-motion: reduce)").matches, this._ico = {
+    super(), this._history = [], this._pendingTarget = null, this._svcTimer = null, this._cachedGraph = {}, this._activeGraphEntity = null, this._telOpen = !1, this._freshTimer = null, this._paramsOpen = !1, this._lastActiveMode = null, this._structKey = "", this._lastTelHtml = "", this._numTweens = /* @__PURE__ */ new WeakMap(), this._anim = { rot: 0, sweep: 0, flow: 0, spd: 0, flowSpd: 0, tgtSpd: 0, tgtFlow: 0, raf: 0, last: 0 }, this._comets = [], this._sheen = null, this._sheenGrad = null, this._reduceMotion = typeof matchMedia == "function" && matchMedia("(prefers-reduced-motion: reduce)").matches, this._ico = {
       thermo: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 14.76V3.5a2.5 2.5 0 10-5 0v11.26a4.5 4.5 0 105 0z"/><circle cx="11.5" cy="18" r="1.5" fill="currentColor" stroke="none"/><line x1="11.5" y1="14" x2="11.5" y2="18"/></svg>',
       target: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/></svg>',
       delta: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M12 4l-8 16h16z"/></svg>',
@@ -399,10 +439,12 @@ class B extends HTMLElement {
     }, this._root = this.attachShadow({ mode: "open" });
   }
   connectedCallback() {
-    (this._anim.tgtSpd || this._anim.tgtFlow) && this._kick();
+    (this._anim.tgtSpd || this._anim.tgtFlow) && this._kick(), this._freshTimer || (this._freshTimer = setInterval(() => {
+      this._structKey && this._render();
+    }, 15e3));
   }
   disconnectedCallback() {
-    this._anim.raf && cancelAnimationFrame(this._anim.raf), this._anim.raf = 0, this._anim.last = 0;
+    this._anim.raf && cancelAnimationFrame(this._anim.raf), this._anim.raf = 0, this._anim.last = 0, this._freshTimer && clearInterval(this._freshTimer), this._freshTimer = null;
   }
   static getConfigElement() {
     return document.createElement("altal-heatpump-card-editor");
@@ -442,12 +484,12 @@ class B extends HTMLElement {
     this._hass = t;
     const i = this._v(t, this._config.current_temp_entity);
     if (i !== null) {
-      const r = Date.now();
-      this._history.push({ t: i, ts: r }), this._history = this._history.filter((s) => s.ts > r - 30 * 6e4);
+      const s = Date.now();
+      this._history.push({ t: i, ts: s }), this._history = this._history.filter((a) => a.ts > s - 30 * 6e4);
     }
     if (this._pendingTarget !== null) {
-      const r = t.states[this._config.climate_entity]?.attributes?.temperature;
-      r != null && Math.abs(parseFloat(r) - this._pendingTarget) < 0.01 && (this._pendingTarget = null);
+      const s = t.states[this._config.climate_entity]?.attributes?.temperature;
+      s != null && Math.abs(parseFloat(s) - this._pendingTarget) < 0.01 && (this._pendingTarget = null);
     }
     (!e || e.states[this._config.climate_entity] !== t.states[this._config.climate_entity] || e.states[this._config.current_temp_entity] !== t.states[this._config.current_temp_entity] || e.states[this._config.target_temp_entity] !== t.states[this._config.target_temp_entity] || e.states[this._config.delta_t_entity] !== t.states[this._config.delta_t_entity] || e.states[this._config.heating_entity] !== t.states[this._config.heating_entity] || [
       this._config.supply_entity,
@@ -456,7 +498,7 @@ class B extends HTMLElement {
       this._config.power_entity,
       this._config.tank_entity,
       this._config.outdoor_entity
-    ].some((r) => r && e.states[r] !== t.states[r]) || this._telSignature(e) !== this._telSignature(t)) && this._render();
+    ].some((s) => s && e.states[s] !== t.states[s]) || this._telSignature(e) !== this._telSignature(t)) && this._render();
   }
   /* ── Live entity resolution ────────────── */
   /** Configured entity, else sensor.<prefix><suffix> if Home Assistant has it. */
@@ -474,11 +516,11 @@ class B extends HTMLElement {
       tank: this._ent(t.tank_entity, "tank_temp"),
       outdoor: this._ent(t.outdoor_entity, "outdoor_temp"),
       tankSet: this._ent(void 0, "param_tank_set")
-    }, o = (p) => p ? this._v(e, p) : null, r = o(i.supply), s = o(i.ret), n = (t.delta_t_entity ? this._v(e, t.delta_t_entity) : null) ?? (r !== null && s !== null ? Math.round((r - s) * 10) / 10 : null);
+    }, o = (p) => p ? this._v(e, p) : null, s = o(i.supply), a = o(i.ret), n = (t.delta_t_entity ? this._v(e, t.delta_t_entity) : null) ?? (s !== null && a !== null ? Math.round((s - a) * 10) / 10 : null);
     return {
       e: i,
-      supply: r,
-      ret: s,
+      supply: s,
+      ret: a,
       dt: n,
       freq: o(i.freq),
       power: o(i.power),
@@ -501,20 +543,20 @@ class B extends HTMLElement {
   _collectTelemetry(t) {
     const e = this._config.telemetry_prefix || "altal_t_", i = {};
     for (const o of Object.keys(t.states)) {
-      let r = null;
-      if (o.startsWith("sensor." + e) ? r = o.slice(("sensor." + e).length) : o.startsWith("binary_sensor." + e) && (r = o.slice(("binary_sensor." + e).length)), !r) continue;
-      const s = t.states[o], l = s.attributes || {}, n = r.match(/(?:^|_)(c0*\d{1,2})(?:_|$)/i), p = l.altal_inquire_id ?? l.inquire_id ?? n?.[1] ?? null, c = r.match(/(?:^|_)([cd]0*\d{1,2})(?:_|$)/i), u = l.altal_setting_id ?? c?.[1] ?? null, f = u ? X(u) : null, k = l.altal_group || (f ? "params" : null) || (p ? W(p) : null) || "other", d = l.altal_label || f || (p ? U(p) : null) || r.replace(/_/g, " ");
+      let s = null;
+      if (o.startsWith("sensor." + e) ? s = o.slice(("sensor." + e).length) : o.startsWith("binary_sensor." + e) && (s = o.slice(("binary_sensor." + e).length)), !s) continue;
+      const a = t.states[o], l = a.attributes || {}, n = s.match(/(?:^|_)(c0*\d{1,2})(?:_|$)/i), p = l.altal_inquire_id ?? l.inquire_id ?? n?.[1] ?? null, d = s.match(/(?:^|_)([cd]0*\d{1,2})(?:_|$)/i), u = l.altal_setting_id ?? d?.[1] ?? null, f = u ? st(u) : null, x = l.altal_group || (f ? "params" : null) || (p ? et(p) : null) || "other", c = l.altal_label || f || (p ? tt(p) : null) || s.replace(/_/g, " ");
       let h;
-      const m = o.startsWith("binary_sensor."), v = u ? Q(u, s.state) : null;
+      const g = o.startsWith("binary_sensor."), w = u ? rt(u, a.state) : null;
       if (l.altal_display != null) h = String(l.altal_display);
-      else if (v !== null) h = v;
-      else if (m) h = s.state === "on" ? "Да" : "Нет";
+      else if (w !== null) h = w;
+      else if (g) h = a.state === "on" ? "Да" : "Нет";
       else {
-        if (s.state === "unknown" || s.state === "unavailable") continue;
-        h = s.state + (l.unit_of_measurement ? " " + l.unit_of_measurement : "");
+        if (a.state === "unknown" || a.state === "unavailable") continue;
+        h = a.state + (l.unit_of_measurement ? " " + l.unit_of_measurement : "");
       }
-      const M = m ? s.state === "on" && (l.device_class === "problem" || l.device_class === "cold") : !1;
-      (i[k] = i[k] || []).push({ label: d, value: h, bad: M });
+      const $ = g ? a.state === "on" && (l.device_class === "problem" || l.device_class === "cold") : !1;
+      (i[x] = i[x] || []).push({ label: c, value: h, bad: $ });
     }
     return i;
   }
@@ -522,7 +564,7 @@ class B extends HTMLElement {
     return this._config.show_telemetry === !1 || !Object.keys(this._collectTelemetry(t)).length ? "" : `
       <div class="telemetry">
         <button class="tel-toggle ${this._telOpen ? "open" : ""}" id="tel_toggle">
-          <span>Телеметрия теплового насоса</span><span class="arr">▾</span>
+          <span>Телеметрия насоса</span><span class="tel-end"><span class="tel-fresh" id="tfresh"></span><span class="arr">▾</span></span>
         </button>
         <div class="tel-body ${this._telOpen ? "open" : ""}">${this._telOpen ? this._telBody(t) : ""}</div>
       </div>`;
@@ -536,13 +578,13 @@ class B extends HTMLElement {
       elec: "Электрика",
       service: "Состояние",
       other: "Прочее"
-    }, o = ["service", "heat", "dhw", "comp", "refr", "elec", "other"], r = e.params || [];
-    let s = "";
+    }, o = ["service", "heat", "dhw", "comp", "refr", "elec", "other"], s = e.params || [];
+    let a = "";
     for (const l of o) {
       const n = e[l];
-      !n || !n.length || (s += `<div class="tel-group"><div class="tel-glbl">${i[l] || l}</div><div class="tel-grid">` + n.map((p) => `<div class="tel-cell"><div class="tv ${p.bad ? "bad" : ""}">${p.value}</div><div class="tl">${p.label}</div></div>`).join("") + "</div></div>");
+      !n || !n.length || (a += `<div class="tel-group"><div class="tel-glbl">${i[l] || l}</div><div class="tel-grid">` + n.map((p) => `<div class="tel-cell"><div class="tv ${p.bad ? "bad" : ""}">${p.value}</div><div class="tl">${p.label}</div></div>`).join("") + "</div></div>");
     }
-    return r.length && (s += `<button class="tel-params-link" id="tel_params">${this._paramsOpen ? "▲ Скрыть параметры" : "▼ Параметры настройки (" + r.length + ")"}</button>`, this._paramsOpen && (s += '<div class="tel-group"><div class="tel-grid">' + r.map((l) => `<div class="tel-cell"><div class="tv">${l.value}</div><div class="tl">${l.label}</div></div>`).join("") + "</div></div>")), s;
+    return s.length && (a += `<button class="tel-params-link" id="tel_params">${this._paramsOpen ? "▲ Скрыть параметры" : "▼ Параметры настройки (" + s.length + ")"}</button>`, this._paramsOpen && (a += '<div class="tel-group"><div class="tel-grid">' + s.map((l) => `<div class="tel-cell"><div class="tv">${l.value}</div><div class="tl">${l.label}</div></div>`).join("") + "</div></div>")), a;
   }
   /* ── Helpers ───────────────────────────── */
   _v(t, e) {
@@ -571,16 +613,16 @@ class B extends HTMLElement {
    * - ΔT > 7°C → too high (restricted flow, dirty filter, air in system)
    */
   _dtDiag(t, e, i, o) {
-    const r = { icon: "", title: "", text: "", cls: "hide" };
-    if (!o) return r;
+    const s = { icon: "", title: "", text: "", cls: "hide" };
+    if (!o) return s;
     if (t === null || t === 0) return { icon: "⏳", title: "Ожидание данных ΔT", text: "Данные ещё не получены", cls: "neutral" };
-    const s = (i ?? 0) - (e ?? 0);
-    return s <= 0.7 && s >= -0.5 ? {
+    const a = (i ?? 0) - (e ?? 0);
+    return a <= 0.7 && a >= -0.5 ? {
       icon: "🟢",
       title: "Режим поддержания",
       text: `Температура близка к уставке. ΔT ${t.toFixed(1)}°C — нормально при модуляции`,
       cls: "good"
-    } : s >= 1.5 && (t < 2 || t > 10) ? {
+    } : a >= 1.5 && (t < 2 || t > 10) ? {
       icon: "🧊",
       title: "Переходный режим",
       text: `Нагрев: ${e?.toFixed(1)} → ${i?.toFixed(1)}°C. ΔT=${t.toFixed(1)}°C — ещё не стабилизировался`,
@@ -606,13 +648,13 @@ class B extends HTMLElement {
   _adjust(t) {
     const e = this._config.step || 0.5, i = this._hass.states[this._config.climate_entity], o = this._pendingTarget ?? parseFloat(i?.attributes?.temperature);
     if (isNaN(o)) return;
-    const r = Math.round((o + t * e) * 10) / 10, s = Math.max(i?.attributes?.min_temp ?? 5, Math.min(i?.attributes?.max_temp ?? 35, r));
-    this._pendingTarget = s;
+    const s = Math.round((o + t * e) * 10) / 10, a = Math.max(i?.attributes?.min_temp ?? 5, Math.min(i?.attributes?.max_temp ?? 35, s));
+    this._pendingTarget = a;
     const l = this._root.querySelector(".sp-val");
-    l && (l.textContent = s.toFixed(1) + "°"), this._render(), this._svcTimer && clearTimeout(this._svcTimer), this._svcTimer = setTimeout(() => {
+    l && (l.textContent = a.toFixed(1) + "°"), this._render(), this._svcTimer && clearTimeout(this._svcTimer), this._svcTimer = setTimeout(() => {
       this._hass.callService("climate", "set_temperature", {
         entity_id: this._config.climate_entity,
-        temperature: s
+        temperature: a
       });
     }, 600);
   }
@@ -638,12 +680,23 @@ class B extends HTMLElement {
     if (!t) return;
     const e = Array.isArray(t.attributes?.hvac_modes) ? t.attributes.hvac_modes.filter((o) => typeof o == "string") : ["heat", "off"];
     if (t.state.toLowerCase() === "off") {
-      const o = D(e, this._lastActiveMode);
+      const o = Q(e, this._lastActiveMode);
       o && this._mode(o);
       return;
     }
     const i = e.find((o) => o.toLowerCase() === "off");
     i && this._mode(i);
+  }
+  /** Tuya Local: pick the working mode on its select and switch the unit on if it is off. */
+  _selectMode(t) {
+    const e = this._config.mode_entity || H(this._config.climate_entity, this._hass.states);
+    if (!e) return;
+    this._hass.states[e]?.state !== t && this._hass.callService("select", "select_option", { entity_id: e, option: t });
+    const i = this._hass.states[this._config.climate_entity];
+    if (i && i.state.toLowerCase() === "off") {
+      const o = N(B(t)) ? "cool" : "heat", s = Array.isArray(i.attributes?.hvac_modes) ? i.attributes.hvac_modes : [];
+      (!s.length || s.includes(o)) && this._mode(o);
+    }
   }
   /* ── Interactive Graphs ────────────────────── */
   async _fetchGraph(t, e) {
@@ -652,58 +705,58 @@ class B extends HTMLElement {
       return;
     }
     this._activeGraphEntity = t, this._render();
-    const i = /* @__PURE__ */ new Date(), o = new Date(i.getTime() - 1440 * 60 * 1e3), r = this._cachedGraph[t];
-    if (r && i.getTime() - r.time < 3e5) {
+    const i = /* @__PURE__ */ new Date(), o = new Date(i.getTime() - 1440 * 60 * 1e3), s = this._cachedGraph[t];
+    if (s && i.getTime() - s.time < 3e5) {
       this._render();
       return;
     }
     try {
-      const s = o.toISOString(), l = i.toISOString(), n = await this._hass.callApi(
+      const a = o.toISOString(), l = i.toISOString(), n = await this._hass.callApi(
         "GET",
-        `history/period/${s}?filter_entity_id=${t}&end_time=${l}&minimal_response`
+        `history/period/${a}?filter_entity_id=${t}&end_time=${l}&minimal_response`
       );
       if (n && n[0] && n[0].length > 0) {
-        let p = 1 / 0, c = -1 / 0;
-        const u = [], f = o.getTime(), k = i.getTime() - f;
+        let p = 1 / 0, d = -1 / 0;
+        const u = [], f = o.getTime(), x = i.getTime() - f;
         for (const h of n[0]) {
-          const m = parseFloat(h.state);
-          if (isNaN(m)) continue;
-          m < p && (p = m), m > c && (c = m);
-          const v = new Date(h.last_changed).getTime();
-          u.push({ x: (v - f) / k, y: m });
+          const g = parseFloat(h.state);
+          if (isNaN(g)) continue;
+          g < p && (p = g), g > d && (d = g);
+          const w = new Date(h.last_changed).getTime();
+          u.push({ x: (w - f) / x, y: g });
         }
-        const d = this._hass.states[t]?.state;
-        if (d) {
-          const h = parseFloat(d);
-          isNaN(h) || (u.push({ x: 1, y: h }), h < p && (p = h), h > c && (c = h));
+        const c = this._hass.states[t]?.state;
+        if (c) {
+          const h = parseFloat(c);
+          isNaN(h) || (u.push({ x: 1, y: h }), h < p && (p = h), h > d && (d = h));
         }
         if (u.length > 1) {
-          const h = c - p, m = h === 0 ? 1 : h * 0.1, v = p - m, $ = c + m - v, C = 300, b = 60;
-          let _ = `M ${u[0].x * C},${b - (u[0].y - v) / $ * b}`, T = `${_}`;
-          for (let E = 1; E < u.length; E++) {
-            const z = u[E].x * C, g = b - (u[E].y - v) / $ * b;
-            _ += ` L ${z},${g}`;
+          const h = d - p, g = h === 0 ? 1 : h * 0.1, w = p - g, C = d + g - w, M = 300, v = 60;
+          let k = `M ${u[0].x * M},${v - (u[0].y - w) / C * v}`, E = `${k}`;
+          for (let A = 1; A < u.length; A++) {
+            const S = u[A].x * M, q = v - (u[A].y - w) / C * v;
+            k += ` L ${S},${q}`;
           }
-          T = `${_} L ${C},${b} L 0,${b} Z`;
-          const S = `
-            <svg viewBox="0 0 ${C} ${b}" preserveAspectRatio="none" style="width:100%; height:60px; margin-top:10px; overflow:visible;">
+          E = `${k} L ${M},${v} L 0,${v} Z`;
+          const T = `
+            <svg viewBox="0 0 ${M} ${v}" preserveAspectRatio="none" style="width:100%; height:60px; margin-top:10px; overflow:visible;">
               <defs>
                 <linearGradient id="gf_${t}" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stop-color="var(--heat)" stop-opacity="0.3"/>
                   <stop offset="100%" stop-color="var(--heat)" stop-opacity="0.0"/>
                 </linearGradient>
               </defs>
-              <path d="${T}" fill="url(#gf_${t})" />
-              <path d="${_}" fill="none" stroke="var(--heat)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="${E}" fill="url(#gf_${t})" />
+              <path d="${k}" fill="none" stroke="var(--heat)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
           `;
-          this._cachedGraph[t] = { time: i.getTime(), svg: S, min: p, max: c }, this._activeGraphEntity === t && this._render();
+          this._cachedGraph[t] = { time: i.getTime(), svg: T, min: p, max: d }, this._activeGraphEntity === t && this._render();
         } else
           this._activeGraphEntity = null, this._render();
       } else
         this._activeGraphEntity = null, this._render();
-    } catch (s) {
-      console.warn("Altal Card - History fetch failed", s), this._activeGraphEntity = null, this._render();
+    } catch (a) {
+      console.warn("Altal Card - History fetch failed", a), this._activeGraphEntity = null, this._render();
     }
   }
   /* ══════════════════ CSS ══════════════════ */
@@ -877,6 +930,9 @@ class B extends HTMLElement {
         font-size: 12px; font-weight: 650; letter-spacing: .5px; text-transform: uppercase; color: var(--txt2); }
       .tel-toggle:active { box-shadow: var(--inset-s); }
       .tel-toggle .arr { transition: transform .3s; }
+      .tel-end { display: flex; align-items: center; gap: 8px; }
+      .tel-fresh { font-size: 11px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--txt2); white-space: nowrap; }
+      .tel-fresh.stale { color: var(--warn, #e2a93b); }
       .tel-toggle.open .arr { transform: rotate(180deg); }
       .tel-body { display: none; margin-top: 10px; }
       .tel-body.open { display: block; animation: fadeDown .35s ease-out; }
@@ -932,16 +988,16 @@ class B extends HTMLElement {
     ];
   }
   _read() {
-    const t = this._config, e = this._hass, i = e.states[t.climate_entity], o = this._v(e, t.current_temp_entity) ?? (i.attributes.current_temperature !== void 0 ? parseFloat(i.attributes.current_temperature) : null), r = this._v(e, t.target_temp_entity) ?? parseFloat(i.attributes.temperature), s = Number.isFinite(r) ? r : null, l = this._live(), n = i.state, p = t.heating_entity && e.states[t.heating_entity] ? e.states[t.heating_entity].state === "on" ? "on" : "off" : null, c = Z({
+    const t = this._config, e = this._hass, i = e.states[t.climate_entity], o = this._v(e, t.current_temp_entity) ?? (i.attributes.current_temperature !== void 0 ? parseFloat(i.attributes.current_temperature) : null), s = this._v(e, t.target_temp_entity) ?? parseFloat(i.attributes.temperature), a = Number.isFinite(s) ? s : null, l = this._live(), n = i.state, p = t.heating_entity && e.states[t.heating_entity] ? e.states[t.heating_entity].state === "on" ? "on" : "off" : null, d = lt({
       off: n.toLowerCase() === "off",
       freq: l.freq,
       power: l.power,
       heatingEntity: p,
       hvacAction: i.attributes.hvac_action ?? null,
       current: o,
-      target: s
-    }), u = Array.isArray(i.attributes.hvac_modes) ? i.attributes.hvac_modes.filter((f) => typeof f == "string") : ["heat", "off"];
-    return { cl: i, curT: o, tgtT: s, live: l, hvac: n, run: c, modes: u };
+      target: a
+    }), u = Array.isArray(i.attributes.hvac_modes) ? i.attributes.hvac_modes.filter((C) => typeof C == "string") : ["heat", "off"], f = t.mode_entity || H(t.climate_entity, e.states), x = f ? e.states[f] : void 0, c = x ? X(x.attributes.options, x.state, t.show_cooling) : [], h = c.length ? B(x?.state) : null, g = e.states[`sensor.${t.telemetry_prefix || "altal_t_"}last_update`], w = g?.last_changed ? (Date.now() - Date.parse(g.last_changed)) / 1e3 : null, $ = nt(g?.attributes?.altal_source ?? null, w);
+    return { cl: i, curT: o, tgtT: a, live: l, hvac: n, run: d, modes: u, modeEntity: f, modeButtons: c, modeCode: h, fresh: $ };
   }
   _render() {
     if (!this._config || !this._hass) {
@@ -953,10 +1009,11 @@ class B extends HTMLElement {
       this._root.innerHTML = `<style>${this._css()}</style><div class="err"><h3>Entity не найден</h3><p>${t.climate_entity}</p></div>`, this._structKey = "";
       return;
     }
-    const i = this._read(), o = this._metricDefs(i.live), r = i.live.supply !== null || i.live.ret !== null, s = JSON.stringify([
+    const i = this._read(), o = this._metricDefs(i.live), s = i.live.supply !== null || i.live.ret !== null, a = JSON.stringify([
       i.modes,
+      i.modeButtons.map((l) => l.option),
       o.map((l) => l.k),
-      r,
+      s,
       this._telOpen,
       this._paramsOpen,
       this._activeGraphEntity,
@@ -969,11 +1026,11 @@ class B extends HTMLElement {
       t.show_telemetry,
       (t.quick_presets || []).join(",")
     ]);
-    s !== this._structKey && (this._build(i, o, r), this._structKey = s, this._lastTelHtml = this._telOpen ? this._telBody(this._hass) : ""), this._update(i, o);
+    a !== this._structKey && (this._build(i, o, s), this._structKey = a, this._lastTelHtml = this._telOpen ? this._telBody(this._hass) : ""), this._update(i, o);
   }
   /** Builds the DOM skeleton. Runs only when the layout itself changes. */
   _build(t, e, i) {
-    const o = this._config, r = o.show_image !== !1, s = o.quick_presets || [19, 20, 22, 24], l = {
+    const o = this._config, s = o.show_image !== !1, a = o.quick_presets || [19, 20, 22, 24], l = {
       heat: this._ico.heat,
       hot: this._ico.heat,
       cool: this._ico.cool,
@@ -984,10 +1041,10 @@ class B extends HTMLElement {
       cold_hotwater: this._ico.cool,
       auto: this._ico.auto,
       off: this._ico.off
-    }, n = 414.69, p = 552.92, c = 55, u = Array.from({ length: c }, (d, h) => {
-      const m = h / (c - 1), v = (135 + 270 * m) * Math.PI / 180, M = h % 9 === 0, $ = M ? 72 : 75, C = 80, b = (T) => `${(100 + T * Math.cos(v)).toFixed(2)} ${(100 + T * Math.sin(v)).toFixed(2)}`, _ = `color-mix(in srgb, var(--heat) ${Math.round(m * 100)}%, var(--cool))`;
-      return `<path class="tk${M ? " mj" : ""}" d="M${b($)} L${b(C)}" style="--tc:${_};transition-delay:${h * 12}ms"/>`;
-    }).join(""), f = (d, h) => `<circle class="comet ${d}" data-len="${h}" cx="100" cy="100" r="88" stroke-dasharray="${h} ${p}" stroke-dashoffset="${h}" transform="rotate(135 100 100)"/>`, k = `
+    }, n = 414.69, p = 552.92, d = 55, u = Array.from({ length: d }, (c, h) => {
+      const g = h / (d - 1), w = (135 + 270 * g) * Math.PI / 180, $ = h % 9 === 0, C = $ ? 72 : 75, M = 80, v = (E) => `${(100 + E * Math.cos(w)).toFixed(2)} ${(100 + E * Math.sin(w)).toFixed(2)}`, k = `color-mix(in srgb, var(--heat) ${Math.round(g * 100)}%, var(--cool))`;
+      return `<path class="tk${$ ? " mj" : ""}" d="M${v(C)} L${v(M)}" style="--tc:${k};transition-delay:${h * 12}ms"/>`;
+    }).join(""), f = (c, h) => `<circle class="comet ${c}" data-len="${h}" cx="100" cy="100" r="88" stroke-dasharray="${h} ${p}" stroke-dashoffset="${h}" transform="rotate(135 100 100)"/>`, x = `
       <div class="dial" id="dial">
         <svg class="gauge" viewBox="0 0 200 200" aria-hidden="true">
           <defs><linearGradient id="gGrad" x1="0" y1="1" x2="1" y2="0">
@@ -1010,7 +1067,7 @@ class B extends HTMLElement {
       <ha-card>
         <div class="card" id="card">
           <div class="top">
-            ${r ? `<div class="pump-thumb">${o.image ? `<img src="${o.image}" alt=""/>` : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14v-4a2 2 0 012-2h12a2 2 0 012 2v4M4 14a2 2 0 002 2h12a2 2 0 002-2M4 14v4a2 2 0 002 2h12a2 2 0 002-2v-4M8 11v6M16 11v6"/></svg>'}</div>` : ""}
+            ${s ? `<div class="pump-thumb">${o.image ? `<img src="${o.image}" alt=""/>` : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14v-4a2 2 0 012-2h12a2 2 0 012 2v4M4 14a2 2 0 002 2h12a2 2 0 002-2M4 14v4a2 2 0 002 2h12a2 2 0 002-2v-4M8 11v6M16 11v6"/></svg>'}</div>` : ""}
             <div class="top-info"><div class="name" id="name"></div><div class="status" id="status"></div></div>
             <div class="top-right">
               <div class="badge" id="badge"><span class="dot"></span><span id="btxt"></span></div>
@@ -1020,7 +1077,7 @@ class B extends HTMLElement {
 
           <div class="dial-area">
             ${o.show_controls !== !1 ? `<button class="side-btn" id="dn" aria-label="Уставка ниже">${this._ico.minus}</button>` : ""}
-            ${k}
+            ${x}
             ${o.show_controls !== !1 ? `<button class="side-btn" id="up" aria-label="Уставка выше">${this._ico.plus}</button>` : ""}
           </div>
           <div class="setpoint">
@@ -1052,11 +1109,11 @@ class B extends HTMLElement {
           </div>` : ""}
 
           <div class="metrics">
-            ${e.map((d) => `
-              <div class="metric" data-k="${d.k}" ${d.graph ? `data-graph="${d.graph}"` : ""} aria-label="${d.lbl}">
-                <div class="m-ico">${d.ico}</div>
-                <div class="m-txt"><div class="m-val">—</div><div class="m-lbl">${d.lbl}</div>
-                  ${d.k === "tank" || d.k === "dt" || d.k === "power" || d.k === "freq" ? '<div class="m-bar"><div class="m-fill" style="width:0%"></div></div>' : ""}</div>
+            ${e.map((c) => `
+              <div class="metric" data-k="${c.k}" ${c.graph ? `data-graph="${c.graph}"` : ""} aria-label="${c.lbl}">
+                <div class="m-ico">${c.ico}</div>
+                <div class="m-txt"><div class="m-val">—</div><div class="m-lbl">${c.lbl}</div>
+                  ${c.k === "tank" || c.k === "dt" || c.k === "power" || c.k === "freq" ? '<div class="m-bar"><div class="m-fill" style="width:0%"></div></div>' : ""}</div>
               </div>`).join("")}
           </div>
 
@@ -1070,10 +1127,10 @@ class B extends HTMLElement {
           </div>` : ""}
 
           ${o.show_presets !== !1 ? `
-          <div class="presets">${s.map((d) => `<button class="chip" data-t="${d}">${d}°</button>`).join("")}</div>` : ""}
+          <div class="presets">${a.map((c) => `<button class="chip" data-t="${c}">${c}°</button>`).join("")}</div>` : ""}
 
           <div class="modes">
-            ${t.modes.map((d) => `<button class="mbtn mode-${P(d)}" data-m="${d}" aria-label="${q(d)}">${l[d.toLowerCase()] || ""} ${q(d)}</button>`).join("")}
+            ${t.modeButtons.length ? t.modeButtons.map((c) => `<button class="mbtn mode-${j(c.code)}" data-opt="${c.option}" aria-label="${L(c.code)}">${l[c.code] || ""} ${L(c.code)}</button>`).join("") : t.modes.map((c) => `<button class="mbtn mode-${j(c)}" data-m="${c}" aria-label="${L(c)}">${l[c.toLowerCase()] || ""} ${L(c)}</button>`).join("")}
           </div>
         </div>
       </ha-card>`, this._comets = Array.from(this._root.querySelectorAll(".comet")), this._sheen = this._root.getElementById("sheen"), this._sheenGrad = this._root.getElementById("pSheen"), this._numTweens = /* @__PURE__ */ new WeakMap(), this._bindAll();
@@ -1085,82 +1142,91 @@ class B extends HTMLElement {
   }
   /** Patches values into the existing DOM. Runs on every state push; never replays entry animations. */
   _update(t, e) {
-    const i = this._config, o = (g) => this._root.getElementById(g), { cl: r, curT: s, tgtT: l, live: n, hvac: p, run: c } = t, u = o("card");
+    const i = this._config, o = (m) => this._root.getElementById(m), { cl: s, curT: a, tgtT: l, live: n, hvac: p, run: d } = t, u = o("card");
     if (!u) return;
-    u.className = `card ${c.kind}`, this._text(o("name"), i.name || r.attributes.friendly_name || "Altal Heat Pump"), this._text(o("status"), `Тепловой насос · ${q(p)}`);
-    const f = o("badge");
-    f && (f.className = `badge ${c.kind}`), this._text(o("btxt"), c.label), o("pwr")?.classList.toggle("on", c.kind !== "off");
-    const k = i.scale_min ?? 20, d = i.scale_max ?? 60, h = 414.69, m = A(s, k, d);
-    this._num(o("cval"), s, 1, "<sup>°</sup>"), o("garc")?.setAttribute("stroke-dashoffset", String(h * (1 - m)));
-    const v = this._root.querySelectorAll("#ticks .tk");
-    v.forEach((g, x) => g.classList.toggle("on", s !== null && x / (v.length - 1) <= m + 1e-6));
+    u.className = `card ${d.kind}`, this._text(o("name"), i.name || s.attributes.friendly_name || "Altal Heat Pump");
+    const f = p.toLowerCase() === "off" ? L("off") : L(t.modeCode ?? p);
+    this._text(o("status"), `Тепловой насос · ${f}`);
+    const x = o("tfresh");
+    this._text(x, t.fresh), x?.classList.toggle("stale", t.fresh.includes("нет данных"));
+    const c = o("badge");
+    c && (c.className = `badge ${d.kind}`), this._text(o("btxt"), d.label), o("pwr")?.classList.toggle("on", d.kind !== "off");
+    const h = i.scale_min ?? 20, g = i.scale_max ?? 60, w = 414.69, $ = z(a, h, g);
+    this._num(o("cval"), a, 1, "<sup>°</sup>"), o("garc")?.setAttribute("stroke-dashoffset", String(w * (1 - $)));
+    const C = this._root.querySelectorAll("#ticks .tk");
+    C.forEach((m, _) => m.classList.toggle("on", a !== null && _ / (C.length - 1) <= $ + 1e-6));
     const M = o("gmark");
-    M && (M.style.transform = `rotate(${135 + 270 * A(this._pendingTarget ?? l, k, d)}deg)`);
-    const $ = this._trend(), C = o("trend");
-    C && C.dataset.tr !== $ && (C.dataset.tr = $, C.className = `c-trend ${$}`, C.innerHTML = `${$ === "up" ? this._ico.up : $ === "down" ? this._ico.down : this._ico.stable} ${$ === "up" ? "Растёт" : $ === "down" ? "Падает" : "Стабильно"}`);
-    const b = o("glow");
-    b && (b.style.opacity = c.running ? String(0.35 + 0.65 * Math.min(1, (n.power ?? 4) / 8)) : "0");
-    const _ = this._pendingTarget ?? l, T = o("spval");
-    T && this._pendingTarget === null && (T.textContent = _ !== null ? `${_.toFixed(1)}°` : "—");
-    const S = s !== null && _ !== null ? _ - s : null;
-    this._text(o("sphint"), c.kind === "off" ? "насос выключен" : S === null ? "" : Math.abs(S) < 0.5 ? "вода на уставке" : S > 0 ? `до уставки +${S.toFixed(1)}°` : `выше уставки на ${(-S).toFixed(1)}°`), this._num(o("fsup"), n.supply, 1), this._num(o("fret"), n.ret, 1);
-    const E = o("fdt");
-    E && (E.className = `f-dt ${c.running ? F(n.dt) : "none"}`, E.textContent = n.dt !== null ? `ΔT ${n.dt.toFixed(1)}°` : "ΔT —");
-    for (const g of e) {
-      const x = this._root.querySelector(`.metric[data-k="${g.k}"]`);
-      if (!x) continue;
-      const y = x.querySelector(".m-val"), w = x.querySelector(".m-fill");
-      let L = !1;
-      switch (g.k) {
+    M && (M.style.transform = `rotate(${135 + 270 * z(this._pendingTarget ?? l, h, g)}deg)`);
+    const v = this._trend(), k = o("trend");
+    k && k.dataset.tr !== v && (k.dataset.tr = v, k.className = `c-trend ${v}`, k.innerHTML = `${v === "up" ? this._ico.up : v === "down" ? this._ico.down : this._ico.stable} ${v === "up" ? "Растёт" : v === "down" ? "Падает" : "Стабильно"}`);
+    const E = o("glow");
+    E && (E.style.opacity = d.running ? String(0.35 + 0.65 * Math.min(1, (n.power ?? 4) / 8)) : "0");
+    const T = this._pendingTarget ?? l, A = o("spval");
+    A && this._pendingTarget === null && (A.textContent = T !== null ? `${T.toFixed(1)}°` : "—");
+    const S = a !== null && T !== null ? T - a : null;
+    this._text(o("sphint"), d.kind === "off" ? "насос выключен" : S === null ? "" : Math.abs(S) < 0.5 ? "вода на уставке" : S > 0 ? `до уставки +${S.toFixed(1)}°` : `выше уставки на ${(-S).toFixed(1)}°`), this._num(o("fsup"), n.supply, 1), this._num(o("fret"), n.ret, 1);
+    const q = o("fdt");
+    q && (q.className = `f-dt ${d.running ? I(n.dt) : "none"}`, q.textContent = n.dt !== null ? `ΔT ${n.dt.toFixed(1)}°` : "ΔT —");
+    for (const m of e) {
+      const _ = this._root.querySelector(`.metric[data-k="${m.k}"]`);
+      if (!_) continue;
+      const y = _.querySelector(".m-val"), b = _.querySelector(".m-fill");
+      let F = !1;
+      switch (m.k) {
         case "freq": {
-          this._num(y, n.freq, 0, "<small>Гц</small>"), L = c.running, w && (w.className = "m-fill hot", w.style.width = `${A(n.freq, 0, 90) * 100}%`);
+          this._num(y, n.freq, 0, "<small>Гц</small>"), F = d.running, b && (b.className = "m-fill hot", b.style.width = `${z(n.freq, 0, 90) * 100}%`);
           break;
         }
         case "power":
-          this._num(y, n.power, 1, "<small>кВт</small>"), L = c.running, w && (w.className = "m-fill hot", w.style.width = `${A(n.power, 0, 12) * 100}%`);
+          this._num(y, n.power, 1, "<small>кВт</small>"), F = d.running, b && (b.className = "m-fill hot", b.style.width = `${z(n.power, 0, 12) * 100}%`);
           break;
         case "tank": {
           this._num(y, n.tank, 1, "<small>°C</small>");
-          const H = n.tank !== null && n.tankSet !== null && n.tank >= n.tankSet;
-          w && (w.className = `m-fill ${H ? "ok" : ""}`, w.style.width = `${A(n.tank, 10, Math.max(40, (n.tankSet ?? 50) + 5)) * 100}%`);
+          const V = n.tank !== null && n.tankSet !== null && n.tank >= n.tankSet;
+          b && (b.className = `m-fill ${V ? "ok" : ""}`, b.style.width = `${z(n.tank, 10, Math.max(40, (n.tankSet ?? 50) + 5)) * 100}%`);
           break;
         }
         case "outdoor":
           this._num(y, n.outdoor, 1, "<small>°C</small>");
           break;
         case "cur":
-          this._num(y, s, 1, "<small>°C</small>"), L = c.running;
+          this._num(y, a, 1, "<small>°C</small>"), F = d.running;
           break;
         case "tgt":
-          this._num(y, _, 1, "<small>°C</small>");
+          this._num(y, T, 1, "<small>°C</small>");
           break;
         case "dt":
-          this._num(y, n.dt, 1, "<small>°C</small>"), w && (w.className = `m-fill ${F(n.dt)}`, w.style.width = `${A(n.dt, 0, 12) * 100}%`);
+          this._num(y, n.dt, 1, "<small>°C</small>"), b && (b.className = `m-fill ${I(n.dt)}`, b.style.width = `${z(n.dt, 0, 12) * 100}%`);
           break;
         case "heat":
-          this._text(y, c.running ? "Вкл" : "Нет"), L = c.running;
+          this._text(y, d.running ? "Вкл" : "Нет"), F = d.running;
           break;
       }
-      x.classList.toggle("hot", L);
+      _.classList.toggle("hot", F);
     }
-    const z = o("diag");
-    if (z) {
-      let g = this._dtDiag(n.dt, s, l, c.running);
+    const G = o("diag");
+    if (G) {
+      let m = this._dtDiag(n.dt, a, l, d.running);
       if (this._activeGraphEntity) {
-        const y = e.find((w) => w.graph === this._activeGraphEntity);
-        g = this._cachedGraph[this._activeGraphEntity] ? { icon: "📊", title: y ? y.lbl : "График", text: "Последние 24 часа · нажмите плитку ещё раз, чтобы скрыть", cls: "neutral" } : { icon: "⌛", title: "Загрузка", text: "Получение истории…", cls: "neutral" };
+        const y = e.find((b) => b.graph === this._activeGraphEntity);
+        m = this._cachedGraph[this._activeGraphEntity] ? { icon: "📊", title: y ? y.lbl : "График", text: "Последние 24 часа · нажмите плитку ещё раз, чтобы скрыть", cls: "neutral" } : { icon: "⌛", title: "Загрузка", text: "Получение истории…", cls: "neutral" };
       }
-      const x = !this._activeGraphEntity && (i.show_diagnostics === !1 || g.cls === "hide");
-      z.className = `diag ${x ? "hide" : g.cls}`, this._text(o("dicon"), g.icon), this._text(o("dtitle"), g.title), this._text(o("dtext"), g.text);
+      const _ = !this._activeGraphEntity && (i.show_diagnostics === !1 || m.cls === "hide");
+      G.className = `diag ${_ ? "hide" : m.cls}`, this._text(o("dicon"), m.icon), this._text(o("dtitle"), m.title), this._text(o("dtext"), m.text);
     }
-    if (this._root.querySelectorAll(".chip").forEach((g) => {
-      const x = parseFloat(g.dataset.t || "NaN");
-      g.classList.toggle("on", _ !== null && Math.abs(x - _) < 0.1);
-    }), this._root.querySelectorAll(".mbtn").forEach((g) => g.classList.toggle("on", (g.dataset.m || "").toLowerCase() === p.toLowerCase())), this._telOpen) {
-      const g = this._root.querySelector(".tel-body"), x = this._telBody(this._hass);
-      g && x !== this._lastTelHtml && (g.innerHTML = x, this._lastTelHtml = x, this._root.getElementById("tel_params")?.addEventListener("click", (y) => this._toggleParams(y)));
+    this._root.querySelectorAll(".chip").forEach((m) => {
+      const _ = parseFloat(m.dataset.t || "NaN");
+      m.classList.toggle("on", T !== null && Math.abs(_ - T) < 0.1);
+    });
+    const R = t.modeEntity ? this._hass.states[t.modeEntity]?.state : void 0;
+    if (this._root.querySelectorAll(".mbtn").forEach((m) => {
+      const _ = m.dataset;
+      m.classList.toggle("on", _.opt !== void 0 ? p.toLowerCase() !== "off" && _.opt === R : (_.m || "").toLowerCase() === p.toLowerCase());
+    }), this._telOpen) {
+      const m = this._root.querySelector(".tel-body"), _ = this._telBody(this._hass);
+      m && _ !== this._lastTelHtml && (m.innerHTML = _, this._lastTelHtml = _, this._root.getElementById("tel_params")?.addEventListener("click", (y) => this._toggleParams(y)));
     }
-    this._anim.tgtSpd = this._reduceMotion ? 0 : tt(c.running, n.freq), this._anim.tgtFlow = this._reduceMotion ? 0 : et(c.running, n.power), this._kick();
+    this._anim.tgtSpd = this._reduceMotion ? 0 : ct(d.running, n.freq), this._anim.tgtFlow = this._reduceMotion ? 0 : dt(d.running, n.power), this._kick();
   }
   /* ── In-place DOM helpers ───────────────── */
   _text(t, e) {
@@ -1174,20 +1240,20 @@ class B extends HTMLElement {
       t.innerHTML !== f && (t.innerHTML = f), this._numTweens.delete(t);
       return;
     }
-    const r = this._numTweens.get(t), s = (f) => {
+    const s = this._numTweens.get(t), a = (f) => {
       t.innerHTML = `${f.toFixed(i)}${o}`;
     };
-    if (!r || this._reduceMotion) {
-      s(e), this._numTweens.set(t, { from: e, to: e, raf: 0 });
+    if (!s || this._reduceMotion) {
+      a(e), this._numTweens.set(t, { from: e, to: e, raf: 0 });
       return;
     }
-    if (r.to === e) return;
-    r.raf && cancelAnimationFrame(r.raf);
-    const l = r.raf ? r.from : r.to, n = performance.now(), p = 700, c = { from: l, to: e, raf: 0 }, u = (f) => {
-      const k = Math.min(1, (f - n) / p), d = 1 - Math.pow(1 - k, 3);
-      s(l + (e - l) * d), c.from = l + (e - l) * d, c.raf = k < 1 ? requestAnimationFrame(u) : 0;
+    if (s.to === e) return;
+    s.raf && cancelAnimationFrame(s.raf);
+    const l = s.raf ? s.from : s.to, n = performance.now(), p = 700, d = { from: l, to: e, raf: 0 }, u = (f) => {
+      const x = Math.min(1, (f - n) / p), c = 1 - Math.pow(1 - x, 3);
+      a(l + (e - l) * c), d.from = l + (e - l) * c, d.raf = x < 1 ? requestAnimationFrame(u) : 0;
     };
-    c.raf = requestAnimationFrame(u), this._numTweens.set(t, c);
+    d.raf = requestAnimationFrame(u), this._numTweens.set(t, d);
   }
   /* ── Animation loop: compressor sweep and water flow ── */
   _kick() {
@@ -1202,13 +1268,13 @@ class B extends HTMLElement {
   }
   _paintAnim() {
     const t = this._anim, e = 414.69, i = t.sweep, o = Math.min(1, t.spd / 120);
-    for (const r of this._comets) {
-      const s = Number(r.getAttribute("data-len") || 0);
-      r.setAttribute("stroke-dashoffset", (s - i).toFixed(1)), r.style.opacity = String(o * (i > e ? Math.max(0, 1 - (i - e) / 40) : 1));
+    for (const s of this._comets) {
+      const a = Number(s.getAttribute("data-len") || 0);
+      s.setAttribute("stroke-dashoffset", (a - i).toFixed(1)), s.style.opacity = String(o * (i > e ? Math.max(0, 1 - (i - e) / 40) : 1));
     }
     if (this._sheenGrad) {
-      const r = (t.flow % 64).toFixed(1);
-      this._sheenGrad.setAttribute("x1", r), this._sheenGrad.setAttribute("x2", (Number(r) + 64).toFixed(1));
+      const s = (t.flow % 64).toFixed(1);
+      this._sheenGrad.setAttribute("x1", s), this._sheenGrad.setAttribute("x2", (Number(s) + 64).toFixed(1));
     }
     this._sheen && (this._sheen.style.opacity = String(Math.min(1, t.flowSpd / 18)));
   }
@@ -1235,15 +1301,17 @@ class B extends HTMLElement {
       })
     ), this._root.querySelectorAll(".mbtn").forEach(
       (e) => e.addEventListener("click", (i) => {
-        i.preventDefault(), i.stopPropagation(), this._mode(i.currentTarget.dataset.m || "off");
+        i.preventDefault(), i.stopPropagation();
+        const o = i.currentTarget.dataset;
+        o.opt !== void 0 ? this._selectMode(o.opt) : this._mode(o.m || "off");
       })
     );
   }
 }
-class it extends B {
+class pt extends P {
 }
-customElements.get("altal-heatpump-card") || customElements.define("altal-heatpump-card", B);
-customElements.get("altal-heatpump-card-pro") || customElements.define("altal-heatpump-card-pro", it);
+customElements.get("altal-heatpump-card") || customElements.define("altal-heatpump-card", P);
+customElements.get("altal-heatpump-card-pro") || customElements.define("altal-heatpump-card-pro", pt);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "altal-heatpump-card",
@@ -1260,7 +1328,7 @@ window.customCards.push({
   documentationURL: "https://github.com/skeep83/altal_heater_card_pro"
 });
 console.info(
-  "%c ALTAL-HEATER-CARD PRO %c v4.5.0 ",
+  "%c ALTAL-HEATER-CARD PRO %c v4.6.0 ",
   "color: white; background: #e6642f; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 8px;",
   "color: #e6642f; background: #e3e6ec; font-weight: bold; border-radius: 0 4px 4px 0; padding: 2px 8px;"
 );

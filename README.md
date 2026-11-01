@@ -61,6 +61,17 @@ Optional live readings (each defaults to `sensor.<telemetry_prefix><name>` when 
 
 "Running" comes from the compressor (frequency or power above zero), or from `heating_entity` when set. Water below the setpoint with the compressor stopped shows as *Ожидание*, and nothing animates then. If `delta_t_entity` is not set, ΔT is computed from supply and return. Animations are disabled when the system asks for reduced motion.
 
+### Tuya Local (v4.6.0)
+
+With the heat pump in [Tuya Local](https://github.com/make-all/tuya-local), the climate entity only knows heat/cool/off and the working mode lives in a separate select (*Combined mode*). Point `climate_entity` at the Tuya Local climate; the card then finds `select.<climate object id>_combined_mode` (a trailing `_2` is ignored) and shows its options as mode buttons: *Отопление*, *ГВС*, *Отопление + ГВС*. Pressing one sets the select and switches the unit on if it was off.
+
+| Option | Default | Used for |
+| --- | --- | --- |
+| `mode_entity` | auto-detected | Working-mode select |
+| `show_cooling` | `false` | Also offer the cooling modes (an active cooling mode is always shown) |
+
+The telemetry header shows where the data comes from and how old it is (`локально · 20 с назад`), read from `sensor.<telemetry_prefix>last_update` and its `altal_source` attribute.
+
 The card translates Home Assistant mode values for display (`hot`, `cold`, `hotwater`, `hot_hotwater`, `cold_hotwater`) but sends the original supported value to Home Assistant. The power control uses the entity's `hvac_modes` list and restores the last active mode when possible. The manual's c41/d41 setting controls which mode families are enabled; it is not the current runtime mode.
 
 Tuya telemetry entities should use the configured prefix. For automatic labels/groups, include `cXX` in the entity ID or set `altal_inquire_id`; optional `altal_label` and `altal_group` attributes override the observed map. Inquiry values stay raw unless the integration has applied a verified unit/scale. `c04` is intentionally unmapped until observed.
