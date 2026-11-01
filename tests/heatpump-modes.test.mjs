@@ -57,3 +57,21 @@ test('maps installer mode-availability parameter c41/d41 separately from runtime
   assert.equal(formatTuyaSettingValue('d41', '9'), null);
   assert.equal(getTuyaSettingLabel('d15'), null);
 });
+
+test('maps Tuya Local combined-mode options onto the shared mode codes', async () => {
+  const { localModeCode, localModeButtons, findModeSelect, isCoolingMode } = await import('../src/heatpump-modes.ts');
+  const options = ['Heating only', 'Cooling only', 'Hot water only', 'Hot water + heating', 'Hot water + cooling'];
+  assert.equal(localModeCode('Hot water + heating'), 'hot_hotwater');
+  assert.equal(localModeCode('Hot water only'), 'hotwater');
+  assert.equal(localModeCode('something else'), null);
+  assert.ok(isCoolingMode('cold_hotwater') && !isCoolingMode('hot'));
+  assert.deepEqual(localModeButtons(options, 'Hot water + heating').map((b) => b.code),
+    ['hot', 'hotwater', 'hot_hotwater']);
+  assert.deepEqual(localModeButtons(options, 'Cooling only').map((b) => b.code),
+    ['hot', 'cold', 'hotwater', 'hot_hotwater'], 'an active cooling mode stays visible');
+  assert.equal(localModeButtons(options, null, true).length, 5);
+  assert.deepEqual(localModeButtons(undefined, null), []);
+  const states = { 'select.altal_home_heater_combined_mode': {} };
+  assert.equal(findModeSelect('climate.altal_home_heater_2', states), 'select.altal_home_heater_combined_mode');
+  assert.equal(findModeSelect('climate.other', states), null);
+});

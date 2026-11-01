@@ -42,3 +42,12 @@ test('gauge fraction and ΔT bands', () => {
   assert.equal(deltaClass(14.8), 'bad');
   assert.equal(deltaClass(null), 'none');
 });
+
+test('freshness text for the telemetry poll', async () => {
+  const { freshnessText } = await import('../src/heatpump-state.ts');
+  assert.equal(freshnessText('local', 12.4), 'локально · 12 с назад');
+  assert.equal(freshnessText('cloud', 0.2), 'облако · 1 с назад');
+  assert.equal(freshnessText('local', 200), 'локально · 3 мин назад');
+  assert.equal(freshnessText('local', 1800), 'локально · нет данных 30 мин');
+  assert.equal(freshnessText(null, null), '');
+});

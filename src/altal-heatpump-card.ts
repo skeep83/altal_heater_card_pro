@@ -1,14 +1,18 @@
 /**
  * Altal Heater Card — Home Assistant Lovelace Custom Card
  * Premium neumorphic card — Smart Home App style
- * v4.5.0 — built once, then patched in place; animations follow the compressor
+ * v4.6.0 — local Tuya data: combined-mode buttons, local climate, data freshness
  */
 
 import './altal-heatpump-card-editor';
-import { choosePowerOnMode, getModeClass, getModeLabel } from './heatpump-modes';
+import {
+  choosePowerOnMode, findModeSelect, getModeClass, getModeLabel, isCoolingMode, localModeButtons, localModeCode,
+} from './heatpump-modes';
 import { getTuyaInquiryGroup, getTuyaInquiryLabel } from './tuya-inquiry-map';
 import { formatTuyaSettingValue, getTuyaSettingLabel } from './tuya-setting-map';
-import { computeRunState, deltaClass, flowSpeed, rotorSpeed, scaleFraction, type RunState } from './heatpump-state';
+import {
+  computeRunState, deltaClass, flowSpeed, freshnessText, rotorSpeed, scaleFraction, type RunState,
+} from './heatpump-state';
 
 /* ═══════════════════ Types ═══════════════════ */
 
@@ -46,6 +50,12 @@ interface CardConfig {
   outdoor_entity?: string;     // outdoor_temp
   scale_min?: number;          // dial scale, °C (default 20)
   scale_max?: number;          // dial scale, °C (default 60)
+
+  // v4.6.0: Tuya Local. The working mode (heating / hot water / both) is a
+  // select next to a plain heat/cool/off climate entity. Defaults to
+  // select.<climate object id>_combined_mode when Home Assistant has it.
+  mode_entity?: string;
+  show_cooling?: boolean;      // also offer the cooling modes (default false)
 }
 
 interface HassEntity {
@@ -73,6 +83,7 @@ class AltalHeatpumpCard extends HTMLElement {
   private _cachedGraph: Record<string, { time: number; svg: string; min: number; max: number }> = {};
   private _activeGraphEntity: string | null = null;
   private _telOpen = false;
+  private _freshTimer: ReturnType<typeof setInterval> | null = null;
   private _paramsOpen = false;
   private _lastActiveMode: string | null = null;
 
@@ -96,12 +107,16 @@ class AltalHeatpumpCard extends HTMLElement {
 
   connectedCallback() {
     if (this._anim.tgtSpd || this._anim.tgtFlow) this._kick();
+    // Keeps the "N с назад" freshness text ticking between telemetry polls.
+    if (!this._freshTimer) this._freshTimer = setInterval(() => { if (this._structKey) this._render(); }, 15000);
   }
 
   disconnectedCallback() {
     if (this._anim.raf) cancelAnimationFrame(this._anim.raf);
     this._anim.raf = 0;
     this._anim.last = 0;
+    if (this._freshTimer) clearInterval(this._freshTimer);
+    this._freshTimer = null;
   }
 
   static getConfigElement() { return document.createElement('altal-heatpump-card-editor'); }
@@ -247,7 +262,7 @@ class AltalHeatpumpCard extends HTMLElement {
     return `
       <div class="telemetry">
         <button class="tel-toggle ${this._telOpen ? 'open' : ''}" id="tel_toggle">
-          <span>Телеметрия теплового насоса</span><span class="arr">▾</span>
+          <span>Телеметрия насоса</span><span class="tel-end"><span class="tel-fresh" id="tfresh"></span><span class="arr">▾</span></span>
         </button>
         <div class="tel-body ${this._telOpen ? 'open' : ''}">${this._telOpen ? this._telBody(hass) : ''}</div>
       </div>`;
@@ -431,6 +446,21 @@ class AltalHeatpumpCard extends HTMLElement {
 
     const offMode = modes.find(mode => mode.toLowerCase() === 'off');
     if (offMode) this._mode(offMode);
+  }
+
+  /** Tuya Local: pick the working mode on its select and switch the unit on if it is off. */
+  private _selectMode(option: string) {
+    const modeEntity = this._config.mode_entity || findModeSelect(this._config.climate_entity, this._hass.states);
+    if (!modeEntity) return;
+    if (this._hass.states[modeEntity]?.state !== option) {
+      this._hass.callService('select', 'select_option', { entity_id: modeEntity, option });
+    }
+    const cl = this._hass.states[this._config.climate_entity];
+    if (cl && cl.state.toLowerCase() === 'off') {
+      const wanted = isCoolingMode(localModeCode(option)) ? 'cool' : 'heat';
+      const modes: string[] = Array.isArray(cl.attributes?.hvac_modes) ? cl.attributes.hvac_modes : [];
+      if (!modes.length || modes.includes(wanted)) this._mode(wanted);
+    }
   }
 
   /* ── Interactive Graphs ────────────────────── */
@@ -743,6 +773,9 @@ class AltalHeatpumpCard extends HTMLElement {
         font-size: 12px; font-weight: 650; letter-spacing: .5px; text-transform: uppercase; color: var(--txt2); }
       .tel-toggle:active { box-shadow: var(--inset-s); }
       .tel-toggle .arr { transition: transform .3s; }
+      .tel-end { display: flex; align-items: center; gap: 8px; }
+      .tel-fresh { font-size: 11px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--txt2); white-space: nowrap; }
+      .tel-fresh.stale { color: var(--warn, #e2a93b); }
       .tel-toggle.open .arr { transform: rotate(180deg); }
       .tel-body { display: none; margin-top: 10px; }
       .tel-body.open { display: block; animation: fadeDown .35s ease-out; }
@@ -822,7 +855,14 @@ class AltalHeatpumpCard extends HTMLElement {
     const modes: string[] = Array.isArray(cl.attributes.hvac_modes)
       ? cl.attributes.hvac_modes.filter((mode: unknown): mode is string => typeof mode === 'string')
       : ['heat', 'off'];
-    return { cl, curT, tgtT, live, hvac, run, modes };
+    const modeEntity = C.mode_entity || findModeSelect(C.climate_entity, H.states);
+    const modeSt = modeEntity ? H.states[modeEntity] : undefined;
+    const modeButtons = modeSt ? localModeButtons(modeSt.attributes.options, modeSt.state, C.show_cooling) : [];
+    const modeCode = modeButtons.length ? localModeCode(modeSt?.state) : null;
+    const updated = H.states[`sensor.${C.telemetry_prefix || 'altal_t_'}last_update`];
+    const age = updated?.last_changed ? (Date.now() - Date.parse(updated.last_changed)) / 1000 : null;
+    const fresh = freshnessText(updated?.attributes?.altal_source ?? null, age);
+    return { cl, curT, tgtT, live, hvac, run, modes, modeEntity, modeButtons, modeCode, fresh };
   }
 
   private _render() {
@@ -843,7 +883,7 @@ class AltalHeatpumpCard extends HTMLElement {
     const metrics = this._metricDefs(r.live);
     const hasFlow = r.live.supply !== null || r.live.ret !== null;
     const key = JSON.stringify([
-      r.modes, metrics.map(m => m.k), hasFlow, this._telOpen, this._paramsOpen,
+      r.modes, r.modeButtons.map(b => b.option), metrics.map(m => m.k), hasFlow, this._telOpen, this._paramsOpen,
       this._activeGraphEntity, this._activeGraphEntity ? !!this._cachedGraph[this._activeGraphEntity] : false,
       C.show_controls, C.show_presets, C.show_diagnostics, C.show_image, C.image, C.show_telemetry,
       (C.quick_presets || []).join(','),
@@ -964,7 +1004,9 @@ class AltalHeatpumpCard extends HTMLElement {
           <div class="presets">${presets.map(p => `<button class="chip" data-t="${p}">${p}°</button>`).join('')}</div>` : ''}
 
           <div class="modes">
-            ${r.modes.map(m => `<button class="mbtn mode-${getModeClass(m)}" data-m="${m}" aria-label="${getModeLabel(m)}">${mIco[m.toLowerCase()] || ''} ${getModeLabel(m)}</button>`).join('')}
+            ${r.modeButtons.length
+              ? r.modeButtons.map(b => `<button class="mbtn mode-${getModeClass(b.code)}" data-opt="${b.option}" aria-label="${getModeLabel(b.code)}">${mIco[b.code] || ''} ${getModeLabel(b.code)}</button>`).join('')
+              : r.modes.map(m => `<button class="mbtn mode-${getModeClass(m)}" data-m="${m}" aria-label="${getModeLabel(m)}">${mIco[m.toLowerCase()] || ''} ${getModeLabel(m)}</button>`).join('')}
           </div>
         </div>
       </ha-card>`;
@@ -992,7 +1034,11 @@ class AltalHeatpumpCard extends HTMLElement {
     card.className = `card ${run.kind}`;
 
     this._text($('name'), C.name || cl.attributes.friendly_name || 'Altal Heat Pump');
-    this._text($('status'), `Тепловой насос · ${getModeLabel(hvac)}`);
+    const modeLabel = hvac.toLowerCase() === 'off' ? getModeLabel('off') : getModeLabel(r.modeCode ?? hvac);
+    this._text($('status'), `Тепловой насос · ${modeLabel}`);
+    const tfresh = $('tfresh');
+    this._text(tfresh, r.fresh);
+    tfresh?.classList.toggle('stale', r.fresh.includes('нет данных'));
     const badge = $('badge');
     if (badge) badge.className = `badge ${run.kind}`;
     this._text($('btxt'), run.label);
@@ -1091,8 +1137,13 @@ class AltalHeatpumpCard extends HTMLElement {
       const t = parseFloat((el as HTMLElement).dataset.t || 'NaN');
       el.classList.toggle('on', shownTgt !== null && Math.abs(t - shownTgt) < 0.1);
     });
-    this._root.querySelectorAll('.mbtn').forEach(el =>
-      el.classList.toggle('on', ((el as HTMLElement).dataset.m || '').toLowerCase() === hvac.toLowerCase()));
+    const modeState = r.modeEntity ? this._hass.states[r.modeEntity]?.state : undefined;
+    this._root.querySelectorAll('.mbtn').forEach(el => {
+      const d = (el as HTMLElement).dataset;
+      el.classList.toggle('on', d.opt !== undefined
+        ? hvac.toLowerCase() !== 'off' && d.opt === modeState
+        : (d.m || '').toLowerCase() === hvac.toLowerCase());
+    });
 
     // telemetry: swap only the body contents, and only when they actually changed
     if (this._telOpen) {
@@ -1226,7 +1277,12 @@ class AltalHeatpumpCard extends HTMLElement {
       el.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); this._preset(parseFloat((e.currentTarget as HTMLElement).dataset.t || '20')); })
     );
     this._root.querySelectorAll('.mbtn').forEach(el =>
-      el.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); this._mode((e.currentTarget as HTMLElement).dataset.m || 'off'); })
+      el.addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const d = (e.currentTarget as HTMLElement).dataset;
+        if (d.opt !== undefined) this._selectMode(d.opt);
+        else this._mode(d.m || 'off');
+      })
     );
   }
 }
@@ -1261,7 +1317,7 @@ if (!customElements.get('altal-heatpump-card-pro')) {
 });
 
 console.info(
-  '%c ALTAL-HEATER-CARD PRO %c v4.5.0 ',
+  '%c ALTAL-HEATER-CARD PRO %c v4.6.0 ',
   'color: white; background: #e6642f; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 8px;',
   'color: #e6642f; background: #e3e6ec; font-weight: bold; border-radius: 0 4px 4px 0; padding: 2px 8px;'
 );
