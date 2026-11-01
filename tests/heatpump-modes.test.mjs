@@ -75,3 +75,14 @@ test('maps Tuya Local combined-mode options onto the shared mode codes', async (
   assert.equal(findModeSelect('climate.altal_home_heater_2', states), 'select.altal_home_heater_combined_mode');
   assert.equal(findModeSelect('climate.other', states), null);
 });
+
+test('setpoint target switch: heating first, cooling hidden unless active', async () => {
+  const { targetButtons, targetKind, findTargetSelect } = await import('../src/heatpump-modes.ts');
+  const options = ['Hot water', 'Heating', 'Cooling'];
+  assert.deepEqual(targetButtons(options, 'Heating').map((b) => b.label), ['Отопление', 'ГВС']);
+  assert.deepEqual(targetButtons(options, 'Cooling').map((b) => b.kind), ['heat', 'dhw', 'cool']);
+  assert.equal(targetKind('Hot water'), 'dhw');
+  assert.equal(targetKind(undefined), null);
+  assert.equal(findTargetSelect('climate.altal_home_heater_2', { 'select.altal_home_heater_temperature_target': {} }),
+    'select.altal_home_heater_temperature_target');
+});

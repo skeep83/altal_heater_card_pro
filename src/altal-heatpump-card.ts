@@ -1,12 +1,13 @@
 /**
  * Altal Heater Card — Home Assistant Lovelace Custom Card
  * Premium neumorphic card — Smart Home App style
- * v4.6.0 — local Tuya data: combined-mode buttons, local climate, data freshness
+ * v4.7.0 — defrost state, heating / DHW setpoint switch on the dial
  */
 
 import './altal-heatpump-card-editor';
 import {
-  choosePowerOnMode, findModeSelect, getModeClass, getModeLabel, isCoolingMode, localModeButtons, localModeCode,
+  choosePowerOnMode, findModeSelect, findTargetSelect, getModeClass, getModeLabel, isCoolingMode,
+  localModeButtons, localModeCode, targetButtons, targetKind,
 } from './heatpump-modes';
 import { getTuyaInquiryGroup, getTuyaInquiryLabel } from './tuya-inquiry-map';
 import { formatTuyaSettingValue, getTuyaSettingLabel } from './tuya-setting-map';
@@ -56,6 +57,13 @@ interface CardConfig {
   // select.<climate object id>_combined_mode when Home Assistant has it.
   mode_entity?: string;
   show_cooling?: boolean;      // also offer the cooling modes (default false)
+
+  // v4.7.0: Tuya Local "Temperature target" select. It decides whether the
+  // climate temperature/setpoint are the heating water or the DHW tank; the
+  // card shows it as a switch above the setpoint. Defaults to
+  // select.<climate object id>_temperature_target.
+  target_entity?: string;
+  dhw_presets?: number[];      // quick setpoints while the tank is selected (default 45, 50, 55)
 }
 
 interface HassEntity {
@@ -84,6 +92,7 @@ class AltalHeatpumpCard extends HTMLElement {
   private _activeGraphEntity: string | null = null;
   private _telOpen = false;
   private _freshTimer: ReturnType<typeof setInterval> | null = null;
+  private _lastTargetOpt: string | null | undefined = undefined;
   private _paramsOpen = false;
   private _lastActiveMode: string | null = null;
 
@@ -152,7 +161,16 @@ class AltalHeatpumpCard extends HTMLElement {
     const prev = this._hass;
     this._hass = hass;
 
-    const c = this._v(hass, this._config.current_temp_entity);
+    const tgtEnt = this._config.target_entity || findTargetSelect(this._config.climate_entity, hass.states);
+    const tgtOpt = tgtEnt ? hass.states[tgtEnt]?.state ?? null : null;
+    if (tgtOpt !== this._lastTargetOpt) {
+      // The climate now reports another circuit; its old readings are not a trend.
+      this._history = [];
+      this._pendingTarget = null;
+      this._lastTargetOpt = tgtOpt;
+    }
+    const clCur = hass.states[this._config.climate_entity]?.attributes?.current_temperature;
+    const c = this._v(hass, this._config.current_temp_entity) ?? (clCur != null && Number.isFinite(parseFloat(clCur)) ? parseFloat(clCur) : null);
     if (c !== null) {
       const now = Date.now();
       this._history.push({ t: c, ts: now });
@@ -448,6 +466,14 @@ class AltalHeatpumpCard extends HTMLElement {
     if (offMode) this._mode(offMode);
   }
 
+  /** Tuya Local: point the dial (temperature and setpoint) at the heating water or the DHW tank. */
+  private _selectTarget(option: string) {
+    const entity = this._config.target_entity || findTargetSelect(this._config.climate_entity, this._hass.states);
+    if (!entity || !option || this._hass.states[entity]?.state === option) return;
+    this._pendingTarget = null;
+    this._hass.callService('select', 'select_option', { entity_id: entity, option });
+  }
+
   /** Tuya Local: pick the working mode on its select and switch the unit on if it is off. */
   private _selectMode(option: string) {
     const modeEntity = this._config.mode_entity || findModeSelect(this._config.climate_entity, this._hass.states);
@@ -668,6 +694,9 @@ class AltalHeatpumpCard extends HTMLElement {
       .badge.running .dot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--heat) 18%, transparent); }
       .badge.waiting { color: var(--warn); }
       .badge.reached { color: var(--good); }
+      .badge.defrost { color: var(--cool); }
+      .badge.defrost .dot { animation: defrostPulse 1.6s ease-in-out infinite; }
+      @keyframes defrostPulse { 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--cool) 25%, transparent); } }
       .pwr {
         width: 40px; height: 40px; border-radius: 13px; border: none; cursor: pointer;
         background: var(--bg); box-shadow: var(--raised-s); color: var(--idle);
@@ -717,10 +746,16 @@ class AltalHeatpumpCard extends HTMLElement {
       .c-val { position: relative; font-size: clamp(30px, 10cqw, 40px); font-weight: 650; line-height: 1.05; margin-top: 2px; font-variant-numeric: tabular-nums; transition: color .6s; }
       .c-val sup { font-size: .45em; font-weight: 600; color: var(--txt2); }
       .card.running .c-val { color: var(--heat); }
+      .card.defrost .c-val { color: var(--cool); }
       .c-trend { position: relative; display: flex; align-items: center; gap: 3px; margin-top: 3px; font-size: 12px; font-weight: 600; color: var(--txt2); }
       .c-trend svg { width: 13px; height: 13px; }
       .c-trend.up { color: var(--heat); } .c-trend.down { color: var(--info); } .c-trend.flat { color: var(--good); }
       .setpoint { text-align: center; margin-bottom: 12px; }
+      .sp-seg { display: inline-flex; gap: 4px; padding: 4px; border-radius: 12px; box-shadow: var(--inset-s); margin-bottom: 8px; }
+      .seg { padding: 6px 14px; border-radius: 9px; border: none; cursor: pointer; font-family: inherit; font-size: 12px; font-weight: 700;
+        letter-spacing: .3px; background: transparent; color: var(--txt2); transition: box-shadow .2s, color .3s; -webkit-tap-highlight-color: transparent; }
+      .seg.on { background: var(--bg); box-shadow: var(--raised-s); }
+      .seg.on.seg-heat { color: var(--heat); } .seg.on.seg-dhw { color: var(--water); } .seg.on.seg-cool { color: var(--cool); }
       .sp-val { font-size: 24px; font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; }
       .sp-hint { font-size: 12px; color: var(--txt2); margin-top: 1px; }
 
@@ -848,9 +883,11 @@ class AltalHeatpumpCard extends HTMLElement {
     const live = this._live();
     const hvac = cl.state;
     const heatEnt = C.heating_entity && H.states[C.heating_entity] ? (H.states[C.heating_entity].state === 'on' ? 'on' : 'off') : null;
+    const defrostEnt = H.states[`binary_sensor.${C.telemetry_prefix || 'altal_t_'}defrost`];
     const run: RunState = computeRunState({
       off: hvac.toLowerCase() === 'off', freq: live.freq, power: live.power, heatingEntity: heatEnt,
       hvacAction: cl.attributes.hvac_action ?? null, current: curT, target: tgtT,
+      defrost: defrostEnt?.state === 'on',
     });
     const modes: string[] = Array.isArray(cl.attributes.hvac_modes)
       ? cl.attributes.hvac_modes.filter((mode: unknown): mode is string => typeof mode === 'string')
@@ -862,7 +899,11 @@ class AltalHeatpumpCard extends HTMLElement {
     const updated = H.states[`sensor.${C.telemetry_prefix || 'altal_t_'}last_update`];
     const age = updated?.last_changed ? (Date.now() - Date.parse(updated.last_changed)) / 1000 : null;
     const fresh = freshnessText(updated?.attributes?.altal_source ?? null, age);
-    return { cl, curT, tgtT, live, hvac, run, modes, modeEntity, modeButtons, modeCode, fresh };
+    const targetEntity = C.target_entity || findTargetSelect(C.climate_entity, H.states);
+    const targetSt = targetEntity ? H.states[targetEntity] : undefined;
+    const tButtons = targetSt ? targetButtons(targetSt.attributes.options, targetSt.state, C.show_cooling) : [];
+    const tKind = tButtons.length ? targetKind(targetSt?.state) : null;
+    return { cl, curT, tgtT, live, hvac, run, modes, modeEntity, modeButtons, modeCode, fresh, targetEntity, tButtons, tKind };
   }
 
   private _render() {
@@ -883,7 +924,7 @@ class AltalHeatpumpCard extends HTMLElement {
     const metrics = this._metricDefs(r.live);
     const hasFlow = r.live.supply !== null || r.live.ret !== null;
     const key = JSON.stringify([
-      r.modes, r.modeButtons.map(b => b.option), metrics.map(m => m.k), hasFlow, this._telOpen, this._paramsOpen,
+      r.modes, r.modeButtons.map(b => b.option), r.tButtons.map(b => b.option), r.tKind, metrics.map(m => m.k), hasFlow, this._telOpen, this._paramsOpen,
       this._activeGraphEntity, this._activeGraphEntity ? !!this._cachedGraph[this._activeGraphEntity] : false,
       C.show_controls, C.show_presets, C.show_diagnostics, C.show_image, C.image, C.show_telemetry,
       (C.quick_presets || []).join(','),
@@ -900,7 +941,7 @@ class AltalHeatpumpCard extends HTMLElement {
   private _build(r: ReturnType<AltalHeatpumpCard['_read']>, metrics: ReturnType<AltalHeatpumpCard['_metricDefs']>, hasFlow: boolean) {
     const C = this._config;
     const showImg = C.show_image !== false;
-    const presets = C.quick_presets || [19, 20, 22, 24];
+    const presets = r.tKind === 'dhw' ? (C.dhw_presets || [45, 50, 55]) : (C.quick_presets || [19, 20, 22, 24]);
     const mIco: Record<string, string> = {
       heat: this._ico.heat, hot: this._ico.heat, cool: this._ico.cool, cold: this._ico.cool,
       hotwater: this._ico.water, dhw: this._ico.water, hot_hotwater: this._ico.heat, cold_hotwater: this._ico.cool,
@@ -930,7 +971,7 @@ class AltalHeatpumpCard extends HTMLElement {
         </svg>
         <div class="dial-in">
           <div class="glow" id="glow"></div>
-          <span class="c-lbl">Сейчас</span>
+          <span class="c-lbl" id="clbl">Сейчас</span>
           <span class="c-val" id="cval">—<sup>°</sup></span>
           <span class="c-trend" id="trend"></span>
         </div>
@@ -955,10 +996,17 @@ class AltalHeatpumpCard extends HTMLElement {
             ${C.show_controls !== false ? `<button class="side-btn" id="up" aria-label="Уставка выше">${this._ico.plus}</button>` : ''}
           </div>
           <div class="setpoint">
-            <div class="sp-lbl">Уставка</div>
+            ${r.tButtons.length > 1 ? `
+            <div class="sp-seg" role="tablist" aria-label="Чья уставка">
+              ${r.tButtons.map(b => `<button class="seg seg-${b.kind}" data-tgt="${b.option}" role="tab">${b.label}</button>`).join('')}
+            </div>` : ''}
+            <div class="sp-lbl" id="splbl">Уставка</div>
             <div class="sp-val" id="spval">—</div>
             <div class="sp-hint" id="sphint"></div>
           </div>
+
+          ${C.show_presets !== false ? `
+          <div class="presets">${presets.map(p => `<button class="chip" data-t="${p}">${p}°</button>`).join('')}</div>` : ''}
 
           ${hasFlow ? `
           <div class="flow">
@@ -1000,8 +1048,6 @@ class AltalHeatpumpCard extends HTMLElement {
             ${this._graphHtml()}
           </div>` : ''}
 
-          ${C.show_presets !== false ? `
-          <div class="presets">${presets.map(p => `<button class="chip" data-t="${p}">${p}°</button>`).join('')}</div>` : ''}
 
           <div class="modes">
             ${r.modeButtons.length
@@ -1035,7 +1081,8 @@ class AltalHeatpumpCard extends HTMLElement {
 
     this._text($('name'), C.name || cl.attributes.friendly_name || 'Altal Heat Pump');
     const modeLabel = hvac.toLowerCase() === 'off' ? getModeLabel('off') : getModeLabel(r.modeCode ?? hvac);
-    this._text($('status'), `Тепловой насос · ${modeLabel}`);
+    // With a mode select the line has room for the mode only; the name already says what this is.
+    this._text($('status'), r.modeCode ? modeLabel : `Тепловой насос · ${modeLabel}`);
     const tfresh = $('tfresh');
     this._text(tfresh, r.fresh);
     tfresh?.classList.toggle('stale', r.fresh.includes('нет данных'));
@@ -1063,12 +1110,19 @@ class AltalHeatpumpCard extends HTMLElement {
     const glow = $('glow');
     if (glow) glow.style.opacity = run.running ? String(0.35 + 0.65 * Math.min(1, (live.power ?? 4) / 8)) : '0';
 
+    const dhw = r.tKind === 'dhw';
+    this._text($('clbl'), dhw ? 'Бак сейчас' : 'Сейчас');
+    this._text($('splbl'), dhw ? 'Уставка бака' : 'Уставка');
+    const tgtState = r.targetEntity ? this._hass.states[r.targetEntity]?.state : undefined;
+    this._root.querySelectorAll('.seg').forEach(el =>
+      el.classList.toggle('on', (el as HTMLElement).dataset.tgt === tgtState));
+
     const shownTgt = this._pendingTarget ?? tgtT;
     const sp = $('spval');
     if (sp && this._pendingTarget === null) sp.textContent = shownTgt !== null ? `${shownTgt.toFixed(1)}°` : '—';
     const gap = curT !== null && shownTgt !== null ? shownTgt - curT : null;
     this._text($('sphint'), run.kind === 'off' ? 'насос выключен' : gap === null ? '' :
-      Math.abs(gap) < 0.5 ? 'вода на уставке' : gap > 0 ? `до уставки +${gap.toFixed(1)}°` : `выше уставки на ${(-gap).toFixed(1)}°`);
+      Math.abs(gap) < 0.5 ? (dhw ? 'бак нагрет' : 'вода на уставке') : gap > 0 ? `до уставки +${gap.toFixed(1)}°` : `выше уставки на ${(-gap).toFixed(1)}°`);
 
     // water loop
     this._num($('fsup'), live.supply, 1);
@@ -1118,7 +1172,9 @@ class AltalHeatpumpCard extends HTMLElement {
     // diagnostics (text only; the graph block is part of the structure)
     const diagEl = $('diag');
     if (diagEl) {
-      let d = this._dtDiag(live.dt, curT, tgtT, run.running);
+      let d = run.kind === 'defrost'
+        ? { icon: '❄️', title: 'Оттайка испарителя', text: 'Насос растапливает иней на наружном блоке. Вода временно остывает — это нормально, нагрев продолжится сам.', cls: 'info' }
+        : this._dtDiag(live.dt, dhw ? null : curT, dhw ? null : tgtT, run.running && !dhw);
       if (this._activeGraphEntity) {
         const m = metrics.find(x => x.graph === this._activeGraphEntity);
         d = this._cachedGraph[this._activeGraphEntity]
@@ -1273,6 +1329,12 @@ class AltalHeatpumpCard extends HTMLElement {
         if (id) this._fetchGraph(id, (el as HTMLElement).getAttribute('aria-label') || '');
       }));
 
+    this._root.querySelectorAll('.seg').forEach(el =>
+      el.addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        this._selectTarget((e.currentTarget as HTMLElement).dataset.tgt || '');
+      })
+    );
     this._root.querySelectorAll('.chip').forEach(el =>
       el.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); this._preset(parseFloat((e.currentTarget as HTMLElement).dataset.t || '20')); })
     );
@@ -1317,7 +1379,7 @@ if (!customElements.get('altal-heatpump-card-pro')) {
 });
 
 console.info(
-  '%c ALTAL-HEATER-CARD PRO %c v4.6.0 ',
+  '%c ALTAL-HEATER-CARD PRO %c v4.7.0 ',
   'color: white; background: #e6642f; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 8px;',
   'color: #e6642f; background: #e3e6ec; font-weight: bold; border-radius: 0 4px 4px 0; padding: 2px 8px;'
 );
