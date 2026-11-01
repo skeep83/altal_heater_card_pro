@@ -14,9 +14,11 @@ export interface RunInputs {
   hvacAction: string | null;
   current: number | null;
   target: number | null;
+  /** The unit reports defrost (hvac_action "defrosting" or a defrost binary_sensor). */
+  defrost?: boolean;
 }
 
-export type RunKind = 'off' | 'running' | 'waiting' | 'reached';
+export type RunKind = 'off' | 'running' | 'waiting' | 'reached' | 'defrost';
 
 export interface RunState {
   kind: RunKind;
@@ -30,11 +32,6 @@ export interface RunState {
 const REACHED_BAND = 0.5;
 
 /**
- * "Running" is decided by the machine itself (compressor frequency / power),
- * not by "water is colder than the setpoint": a heat pump often sits idle
- * between cycles while still below target, and the card must not animate then.
- */
-/**
  * "локально · 20 с" style freshness text for the telemetry daemon's last poll.
  * Returns an empty string when there is no timestamp to judge.
  */
@@ -46,10 +43,18 @@ export function freshnessText(source: string | null | undefined, ageSeconds: num
   return `${where} · ${Math.max(1, Math.round(ageSeconds))} с назад`;
 }
 
+/**
+ * "Running" is decided by the machine itself (compressor frequency / power),
+ * not by "water is colder than the setpoint": a heat pump often sits idle
+ * between cycles while still below target, and the card must not animate then.
+ */
 export function computeRunState(i: RunInputs): RunState {
   if (i.off) return { kind: 'off', running: false, demand: false, label: 'Выкл' };
 
   const demand = i.current !== null && i.target !== null && i.current < i.target - REACHED_BAND;
+  // Defrost runs the compressor in reverse to melt the evaporator; the water
+  // cools a little meanwhile, which is expected and not a fault.
+  if (i.defrost || i.hvacAction === 'defrosting') return { kind: 'defrost', running: true, demand, label: 'Оттайка' };
 
   let running: boolean;
   if (i.heatingEntity !== null) running = i.heatingEntity === 'on';

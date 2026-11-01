@@ -51,3 +51,12 @@ test('freshness text for the telemetry poll', async () => {
   assert.equal(freshnessText('local', 1800), 'локально · нет данных 30 мин');
   assert.equal(freshnessText(null, null), '');
 });
+
+test('defrost wins over running/waiting and keeps the animation alive', async () => {
+  const { computeRunState } = await import('../src/heatpump-state.ts');
+  const base = { off: false, freq: 0, power: 0, heatingEntity: null, hvacAction: null, current: 30, target: 35 };
+  assert.equal(computeRunState({ ...base, hvacAction: 'defrosting' }).kind, 'defrost');
+  assert.equal(computeRunState({ ...base, defrost: true }).label, 'Оттайка');
+  assert.equal(computeRunState({ ...base, defrost: true }).running, true);
+  assert.equal(computeRunState({ ...base, off: true, defrost: true }).kind, 'off');
+});

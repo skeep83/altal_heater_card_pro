@@ -77,14 +77,54 @@ export function localModeButtons(
     .filter((b) => showCooling || !isCoolingMode(b.code) || b.code === currentCode);
 }
 
-/** The combined-mode select that belongs to a Tuya Local climate entity, if Home Assistant has one. */
-export function findModeSelect(climateId: string, states: Record<string, unknown>): string | null {
+function findSiblingSelect(climateId: string, suffix: string, states: Record<string, unknown>): string | null {
   const obj = climateId.split('.')[1] ?? '';
   for (const base of [obj, obj.replace(/_\d+$/, '')]) {
-    const id = `select.${base}_combined_mode`;
+    const id = `select.${base}_${suffix}`;
     if (base && states[id]) return id;
   }
   return null;
+}
+
+/** The combined-mode select that belongs to a Tuya Local climate entity, if Home Assistant has one. */
+export function findModeSelect(climateId: string, states: Record<string, unknown>): string | null {
+  return findSiblingSelect(climateId, 'combined_mode', states);
+}
+
+/**
+ * Tuya Local's "Temperature target" select decides which circuit the climate
+ * entity's temperature and setpoint refer to: heating water or the DHW tank.
+ */
+export function findTargetSelect(climateId: string, states: Record<string, unknown>): string | null {
+  return findSiblingSelect(climateId, 'temperature_target', states);
+}
+
+export type TargetKind = 'heat' | 'dhw' | 'cool';
+
+const TARGET_KINDS: Record<string, { kind: TargetKind; label: string }> = {
+  heating: { kind: 'heat', label: 'Отопление' },
+  'hot water': { kind: 'dhw', label: 'ГВС' },
+  cooling: { kind: 'cool', label: 'Охлаждение' },
+};
+
+export function targetKind(option: string | null | undefined): TargetKind | null {
+  return typeof option === 'string' ? TARGET_KINDS[option.trim().toLowerCase()]?.kind ?? null : null;
+}
+
+/** Segments for the setpoint switch; cooling only when asked for or active. */
+export function targetButtons(
+  options: unknown,
+  current: string | null | undefined,
+  showCooling = false,
+): { option: string; kind: TargetKind; label: string }[] {
+  if (!Array.isArray(options)) return [];
+  const buttons = options
+    .filter((o): o is string => typeof o === 'string')
+    .map((option) => ({ option, ...(TARGET_KINDS[option.trim().toLowerCase()] ?? { kind: null, label: '' }) }))
+    .filter((b): b is { option: string; kind: TargetKind; label: string } => b.kind !== null)
+    .filter((b) => showCooling || b.kind !== 'cool' || b.option === current);
+  // Heating first: it is the circuit people adjust most.
+  return buttons.sort((a, b) => (a.kind === 'heat' ? -1 : b.kind === 'heat' ? 1 : 0));
 }
 
 /** Return an allowed native HA mode, never a translated/display label. */

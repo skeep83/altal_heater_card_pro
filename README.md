@@ -70,6 +70,12 @@ With the heat pump in [Tuya Local](https://github.com/make-all/tuya-local), the 
 | `mode_entity` | auto-detected | Working-mode select |
 | `show_cooling` | `false` | Also offer the cooling modes (an active cooling mode is always shown) |
 
+### Setpoint target and defrost (v4.7.0)
+
+Tuya Local's *Temperature target* select decides whether the climate temperature and setpoint are the heating water or the DHW tank. The card shows it as an *Отопление | ГВС* switch above the setpoint (`target_entity`, auto-detected as `select.<climate object id>_temperature_target`). With the tank selected the dial reads *Бак сейчас* / *Уставка бака* and the quick setpoints switch to `dhw_presets` (default `45, 50, 55`); `quick_presets` stay for the heating water. Quick setpoints sit right under the setpoint.
+
+Defrost comes from the climate's `hvac_action: defrosting` (or `binary_sensor.<prefix>defrost`). The badge then reads *Оттайка* in the cool colour and the diagnostics explain that the water cools briefly on purpose.
+
 The telemetry header shows where the data comes from and how old it is (`локально · 20 с назад`), read from `sensor.<telemetry_prefix>last_update` and its `altal_source` attribute.
 
 The card translates Home Assistant mode values for display (`hot`, `cold`, `hotwater`, `hot_hotwater`, `cold_hotwater`) but sends the original supported value to Home Assistant. The power control uses the entity's `hvac_modes` list and restores the last active mode when possible. The manual's c41/d41 setting controls which mode families are enabled; it is not the current runtime mode.
