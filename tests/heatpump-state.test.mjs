@@ -21,8 +21,19 @@ test('without telemetry falls back to hvac_action, then to demand', () => {
   assert.equal(computeRunState({ ...base }).running, true);
 });
 
-test('off mode is never running', () => {
-  assert.deepEqual(computeRunState({ ...base, off: true, freq: 50 }).kind, 'off');
+test('off with idle or stale telemetry is off', () => {
+  assert.equal(computeRunState({ ...base, off: true, freq: 50 }).kind, 'off');
+  assert.equal(computeRunState({ ...base, off: true, freq: 50, telemetryFresh: false }).kind, 'off');
+  assert.equal(computeRunState({ ...base, off: true, freq: 0, power: 0, telemetryFresh: true }).kind, 'off');
+});
+
+test('fresh compressor telemetry wins over a stale Tuya "off"', () => {
+  const r = computeRunState({ ...base, off: true, freq: 50, power: 0, telemetryFresh: true });
+  assert.equal(r.kind, 'running');
+  assert.equal(r.running, true);
+  assert.equal(r.mismatch, true);
+  assert.equal(computeRunState({ ...base, off: true, freq: 50, defrost: true, telemetryFresh: true }).kind, 'defrost');
+  assert.equal(computeRunState({ ...base, freq: 50, telemetryFresh: true }).mismatch, undefined);
 });
 
 test('animation speeds stop when idle and grow with load', () => {

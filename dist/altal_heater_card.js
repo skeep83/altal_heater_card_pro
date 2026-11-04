@@ -401,8 +401,9 @@ function gt(s, t) {
   return t >= 600 ? `${e} · нет данных ${Math.round(t / 60)} мин` : t >= 90 ? `${e} · ${Math.round(t / 60)} мин назад` : `${e} · ${Math.max(1, Math.round(t))} с назад`;
 }
 function ft(s) {
-  if (s.off) return { kind: "off", running: !1, demand: !1, label: "Выкл" };
   const t = s.current !== null && s.target !== null && s.current < s.target - ut;
+  if (s.off)
+    return s.telemetryFresh === !0 && ((s.freq ?? 0) > 0 || (s.power ?? 0) > 0.05) ? s.defrost ? { kind: "defrost", running: !0, demand: t, label: "Оттайка", mismatch: !0 } : { kind: "running", running: !0, demand: t, label: "Работает", mismatch: !0 } : { kind: "off", running: !1, demand: !1, label: "Выкл" };
   if (s.defrost || s.hvacAction === "defrosting") return { kind: "defrost", running: !0, demand: t, label: "Оттайка" };
   let e;
   return s.heatingEntity !== null ? e = s.heatingEntity === "on" : s.freq !== null || s.power !== null ? e = (s.freq ?? 0) > 0 || (s.power ?? 0) > 0.05 : s.hvacAction ? e = s.hvacAction === "heating" || s.hvacAction === "cooling" : e = t, e ? { kind: "running", running: e, demand: t, label: "Работает" } : t ? { kind: "waiting", running: e, demand: t, label: "Ожидание" } : { kind: "reached", running: e, demand: t, label: "Уставка достигнута" };
@@ -417,7 +418,7 @@ function vt(s, t) {
   const e = t !== null && t > 0 ? t : 3;
   return Math.max(14, Math.min(90, 12 + e * 7));
 }
-function z(s, t, e) {
+function q(s, t, e) {
   return s === null || !Number.isFinite(s) || e <= t ? 0 : Math.max(0, Math.min(1, (s - t) / (e - t)));
 }
 function D(s) {
@@ -565,18 +566,18 @@ class W extends HTMLElement {
     for (const o of Object.keys(t.states)) {
       let r = null;
       if (o.startsWith("sensor." + e) ? r = o.slice(("sensor." + e).length) : o.startsWith("binary_sensor." + e) && (r = o.slice(("binary_sensor." + e).length)), !r) continue;
-      const a = t.states[o], l = a.attributes || {}, n = r.match(/(?:^|_)(c0*\d{1,2})(?:_|$)/i), p = l.altal_inquire_id ?? l.inquire_id ?? n?.[1] ?? null, d = r.match(/(?:^|_)([cd]0*\d{1,2})(?:_|$)/i), g = l.altal_setting_id ?? d?.[1] ?? null, m = g ? pt(g) : null, w = l.altal_group || (m ? "params" : null) || (p ? lt(p) : null) || "other", c = l.altal_label || m || (p ? nt(p) : null) || r.replace(/_/g, " ");
+      const a = t.states[o], l = a.attributes || {}, n = r.match(/(?:^|_)(c0*\d{1,2})(?:_|$)/i), p = l.altal_inquire_id ?? l.inquire_id ?? n?.[1] ?? null, d = r.match(/(?:^|_)([cd]0*\d{1,2})(?:_|$)/i), u = l.altal_setting_id ?? d?.[1] ?? null, f = u ? pt(u) : null, b = l.altal_group || (f ? "params" : null) || (p ? lt(p) : null) || "other", c = l.altal_label || f || (p ? nt(p) : null) || r.replace(/_/g, " ");
       let h;
-      const v = o.startsWith("binary_sensor."), x = g ? ht(g, a.state) : null;
+      const m = o.startsWith("binary_sensor."), x = u ? ht(u, a.state) : null;
       if (l.altal_display != null) h = String(l.altal_display);
       else if (x !== null) h = x;
-      else if (v) h = a.state === "on" ? "Да" : "Нет";
+      else if (m) h = a.state === "on" ? "Да" : "Нет";
       else {
         if (a.state === "unknown" || a.state === "unavailable") continue;
         h = a.state + (l.unit_of_measurement ? " " + l.unit_of_measurement : "");
       }
-      const C = v ? a.state === "on" && (l.device_class === "problem" || l.device_class === "cold") : !1;
-      (i[w] = i[w] || []).push({ label: c, value: h, bad: C });
+      const C = m ? a.state === "on" && (l.device_class === "problem" || l.device_class === "cold") : !1;
+      (i[b] = i[b] || []).push({ label: c, value: h, bad: C });
     }
     return i;
   }
@@ -742,29 +743,29 @@ class W extends HTMLElement {
       );
       if (n && n[0] && n[0].length > 0) {
         let p = 1 / 0, d = -1 / 0;
-        const g = [], m = o.getTime(), w = i.getTime() - m;
+        const u = [], f = o.getTime(), b = i.getTime() - f;
         for (const h of n[0]) {
-          const v = parseFloat(h.state);
-          if (isNaN(v)) continue;
-          v < p && (p = v), v > d && (d = v);
+          const m = parseFloat(h.state);
+          if (isNaN(m)) continue;
+          m < p && (p = m), m > d && (d = m);
           const x = new Date(h.last_changed).getTime();
-          g.push({ x: (x - m) / w, y: v });
+          u.push({ x: (x - f) / b, y: m });
         }
         const c = this._hass.states[t]?.state;
         if (c) {
           const h = parseFloat(c);
-          isNaN(h) || (g.push({ x: 1, y: h }), h < p && (p = h), h > d && (d = h));
+          isNaN(h) || (u.push({ x: 1, y: h }), h < p && (p = h), h > d && (d = h));
         }
-        if (g.length > 1) {
-          const h = d - p, v = h === 0 ? 1 : h * 0.1, x = p - v, E = d + v - x, k = 300, f = 60;
-          let b = `M ${g[0].x * k},${f - (g[0].y - x) / E * f}`, M = `${b}`;
-          for (let S = 1; S < g.length; S++) {
-            const A = g[S].x * k, B = f - (g[S].y - x) / E * f;
-            b += ` L ${A},${B}`;
+        if (u.length > 1) {
+          const h = d - p, m = h === 0 ? 1 : h * 0.1, x = p - m, E = d + m - x, k = 300, v = 60;
+          let w = `M ${u[0].x * k},${v - (u[0].y - x) / E * v}`, M = `${w}`;
+          for (let S = 1; S < u.length; S++) {
+            const A = u[S].x * k, B = v - (u[S].y - x) / E * v;
+            w += ` L ${A},${B}`;
           }
-          M = `${b} L ${k},${f} L 0,${f} Z`;
+          M = `${w} L ${k},${v} L 0,${v} Z`;
           const T = `
-            <svg viewBox="0 0 ${k} ${f}" preserveAspectRatio="none" style="width:100%; height:60px; margin-top:10px; overflow:visible;">
+            <svg viewBox="0 0 ${k} ${v}" preserveAspectRatio="none" style="width:100%; height:60px; margin-top:10px; overflow:visible;">
               <defs>
                 <linearGradient id="gf_${t}" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stop-color="var(--heat)" stop-opacity="0.3"/>
@@ -772,7 +773,7 @@ class W extends HTMLElement {
                 </linearGradient>
               </defs>
               <path d="${M}" fill="url(#gf_${t})" />
-              <path d="${b}" fill="none" stroke="var(--heat)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="${w}" fill="none" stroke="var(--heat)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
           `;
           this._cachedGraph[t] = { time: i.getTime(), svg: T, min: p, max: d }, this._activeGraphEntity === t && this._render();
@@ -1022,7 +1023,7 @@ class W extends HTMLElement {
     ];
   }
   _read() {
-    const t = this._config, e = this._hass, i = e.states[t.climate_entity], o = this._v(e, t.current_temp_entity) ?? (i.attributes.current_temperature !== void 0 ? parseFloat(i.attributes.current_temperature) : null), r = this._v(e, t.target_temp_entity) ?? parseFloat(i.attributes.temperature), a = Number.isFinite(r) ? r : null, l = this._live(), n = i.state, p = t.heating_entity && e.states[t.heating_entity] ? e.states[t.heating_entity].state === "on" ? "on" : "off" : null, d = e.states[`binary_sensor.${t.telemetry_prefix || "altal_t_"}defrost`], g = ft({
+    const t = this._config, e = this._hass, i = e.states[t.climate_entity], o = this._v(e, t.current_temp_entity) ?? (i.attributes.current_temperature !== void 0 ? parseFloat(i.attributes.current_temperature) : null), r = this._v(e, t.target_temp_entity) ?? parseFloat(i.attributes.temperature), a = Number.isFinite(r) ? r : null, l = this._live(), n = i.state, p = t.heating_entity && e.states[t.heating_entity] ? e.states[t.heating_entity].state === "on" ? "on" : "off" : null, d = e.states[`binary_sensor.${t.telemetry_prefix || "altal_t_"}defrost`], u = e.states[`sensor.${t.telemetry_prefix || "altal_t_"}last_update`], f = u?.last_changed ? (Date.now() - Date.parse(u.last_changed)) / 1e3 : null, b = ft({
       off: n.toLowerCase() === "off",
       freq: l.freq,
       power: l.power,
@@ -1030,9 +1031,10 @@ class W extends HTMLElement {
       hvacAction: i.attributes.hvac_action ?? null,
       current: o,
       target: a,
-      defrost: d?.state === "on"
-    }), m = Array.isArray(i.attributes.hvac_modes) ? i.attributes.hvac_modes.filter((T) => typeof T == "string") : ["heat", "off"], w = t.mode_entity || N(t.climate_entity, e.states), c = w ? e.states[w] : void 0, h = c ? et(c.attributes.options, c.state, t.show_cooling) : [], v = h.length ? G(c?.state) : null, x = e.states[`sensor.${t.telemetry_prefix || "altal_t_"}last_update`], C = x?.last_changed ? (Date.now() - Date.parse(x.last_changed)) / 1e3 : null, E = gt(x?.attributes?.altal_source ?? null, C), k = t.target_entity || I(t.climate_entity, e.states), f = k ? e.states[k] : void 0, b = f ? it(f.attributes.options, f.state, t.show_cooling) : [], M = b.length ? ot(f?.state) : null;
-    return { cl: i, curT: o, tgtT: a, live: l, hvac: n, run: g, modes: m, modeEntity: w, modeButtons: h, modeCode: v, fresh: E, targetEntity: k, tButtons: b, tKind: M };
+      defrost: d?.state === "on",
+      telemetryFresh: f !== null && f >= 0 && f < 600
+    }), c = Array.isArray(i.attributes.hvac_modes) ? i.attributes.hvac_modes.filter((T) => typeof T == "string") : ["heat", "off"], h = t.mode_entity || N(t.climate_entity, e.states), m = h ? e.states[h] : void 0, x = m ? et(m.attributes.options, m.state, t.show_cooling) : [], C = x.length ? G(m?.state) : null, E = gt(u?.attributes?.altal_source ?? null, f), k = t.target_entity || I(t.climate_entity, e.states), v = k ? e.states[k] : void 0, w = v ? it(v.attributes.options, v.state, t.show_cooling) : [], M = w.length ? ot(v?.state) : null;
+    return { cl: i, curT: o, tgtT: a, live: l, hvac: n, run: b, modes: c, modeEntity: h, modeButtons: x, modeCode: C, fresh: E, targetEntity: k, tButtons: w, tKind: M };
   }
   _render() {
     if (!this._config || !this._hass) {
@@ -1078,18 +1080,18 @@ class W extends HTMLElement {
       cold_hotwater: this._ico.cool,
       auto: this._ico.auto,
       off: this._ico.off
-    }, n = 414.69, p = 552.92, d = 55, g = Array.from({ length: d }, (c, h) => {
-      const v = h / (d - 1), x = (135 + 270 * v) * Math.PI / 180, C = h % 9 === 0, E = C ? 72 : 75, k = 80, f = (M) => `${(100 + M * Math.cos(x)).toFixed(2)} ${(100 + M * Math.sin(x)).toFixed(2)}`, b = `color-mix(in srgb, var(--heat) ${Math.round(v * 100)}%, var(--cool))`;
-      return `<path class="tk${C ? " mj" : ""}" d="M${f(E)} L${f(k)}" style="--tc:${b};transition-delay:${h * 12}ms"/>`;
-    }).join(""), m = (c, h) => `<circle class="comet ${c}" data-len="${h}" cx="100" cy="100" r="88" stroke-dasharray="${h} ${p}" stroke-dashoffset="${h}" transform="rotate(135 100 100)"/>`, w = `
+    }, n = 414.69, p = 552.92, d = 55, u = Array.from({ length: d }, (c, h) => {
+      const m = h / (d - 1), x = (135 + 270 * m) * Math.PI / 180, C = h % 9 === 0, E = C ? 72 : 75, k = 80, v = (M) => `${(100 + M * Math.cos(x)).toFixed(2)} ${(100 + M * Math.sin(x)).toFixed(2)}`, w = `color-mix(in srgb, var(--heat) ${Math.round(m * 100)}%, var(--cool))`;
+      return `<path class="tk${C ? " mj" : ""}" d="M${v(E)} L${v(k)}" style="--tc:${w};transition-delay:${h * 12}ms"/>`;
+    }).join(""), f = (c, h) => `<circle class="comet ${c}" data-len="${h}" cx="100" cy="100" r="88" stroke-dasharray="${h} ${p}" stroke-dashoffset="${h}" transform="rotate(135 100 100)"/>`, b = `
       <div class="dial" id="dial">
         <svg class="gauge" viewBox="0 0 200 200" aria-hidden="true">
           <defs><linearGradient id="gGrad" x1="0" y1="1" x2="1" y2="0">
             <stop offset="0%" style="stop-color:var(--cool)"/><stop offset="100%" style="stop-color:var(--heat)"/></linearGradient></defs>
-          <g id="ticks">${g}</g>
+          <g id="ticks">${u}</g>
           <circle class="g-track" cx="100" cy="100" r="88" stroke-dasharray="${n} ${p}" transform="rotate(135 100 100)"/>
           <circle class="g-val" id="garc" cx="100" cy="100" r="88" stroke-dasharray="${n} ${p}" stroke-dashoffset="${n}" transform="rotate(135 100 100)"/>
-          ${m("c3", 70)}${m("c2", 30)}${m("c1", 9)}
+          ${f("c3", 70)}${f("c2", 30)}${f("c1", 9)}
           <g class="g-mark" id="gmark" style="transform-origin:100px 100px"><line x1="182" y1="100" x2="194" y2="100"/></g>
         </svg>
         <div class="dial-in">
@@ -1114,7 +1116,7 @@ class W extends HTMLElement {
 
           <div class="dial-area">
             ${o.show_controls !== !1 ? `<button class="side-btn" id="dn" aria-label="Уставка ниже">${this._ico.minus}</button>` : ""}
-            ${w}
+            ${b}
             ${o.show_controls !== !1 ? `<button class="side-btn" id="up" aria-label="Уставка выше">${this._ico.plus}</button>` : ""}
           </div>
           <div class="setpoint">
@@ -1184,52 +1186,52 @@ class W extends HTMLElement {
   }
   /** Patches values into the existing DOM. Runs on every state push; never replays entry animations. */
   _update(t, e) {
-    const i = this._config, o = (u) => this._root.getElementById(u), { cl: r, curT: a, tgtT: l, live: n, hvac: p, run: d } = t, g = o("card");
-    if (!g) return;
-    g.className = `card ${d.kind}`, this._text(o("name"), i.name || r.attributes.friendly_name || "Altal Heat Pump");
-    const m = p.toLowerCase() === "off" ? L("off") : L(t.modeCode ?? p);
-    this._text(o("status"), t.modeCode ? m : `Тепловой насос · ${m}`);
-    const w = o("tfresh");
-    this._text(w, t.fresh), w?.classList.toggle("stale", t.fresh.includes("нет данных"));
+    const i = this._config, o = (g) => this._root.getElementById(g), { cl: r, curT: a, tgtT: l, live: n, hvac: p, run: d } = t, u = o("card");
+    if (!u) return;
+    u.className = `card ${d.kind}`, this._text(o("name"), i.name || r.attributes.friendly_name || "Altal Heat Pump");
+    const f = p.toLowerCase() === "off" ? L("off") : L(t.modeCode ?? p);
+    this._text(o("status"), t.modeCode ? f : `Тепловой насос · ${f}`);
+    const b = o("tfresh");
+    this._text(b, t.fresh), b?.classList.toggle("stale", t.fresh.includes("нет данных"));
     const c = o("badge");
-    c && (c.className = `badge ${d.kind}`), this._text(o("btxt"), d.label), o("pwr")?.classList.toggle("on", d.kind !== "off");
-    const h = i.scale_min ?? 20, v = i.scale_max ?? 60, x = 414.69, C = z(a, h, v);
+    c && (c.className = `badge ${d.kind}`), this._text(o("btxt"), d.label), o("pwr")?.classList.toggle("on", p.toLowerCase() !== "off");
+    const h = i.scale_min ?? 20, m = i.scale_max ?? 60, x = 414.69, C = q(a, h, m);
     this._num(o("cval"), a, 1, "<sup>°</sup>"), o("garc")?.setAttribute("stroke-dashoffset", String(x * (1 - C)));
     const E = this._root.querySelectorAll("#ticks .tk");
-    E.forEach((u, _) => u.classList.toggle("on", a !== null && _ / (E.length - 1) <= C + 1e-6));
+    E.forEach((g, _) => g.classList.toggle("on", a !== null && _ / (E.length - 1) <= C + 1e-6));
     const k = o("gmark");
-    k && (k.style.transform = `rotate(${135 + 270 * z(this._pendingTarget ?? l, h, v)}deg)`);
-    const f = this._trend(), b = o("trend");
-    b && b.dataset.tr !== f && (b.dataset.tr = f, b.className = `c-trend ${f}`, b.innerHTML = `${f === "up" ? this._ico.up : f === "down" ? this._ico.down : this._ico.stable} ${f === "up" ? "Растёт" : f === "down" ? "Падает" : "Стабильно"}`);
+    k && (k.style.transform = `rotate(${135 + 270 * q(this._pendingTarget ?? l, h, m)}deg)`);
+    const v = this._trend(), w = o("trend");
+    w && w.dataset.tr !== v && (w.dataset.tr = v, w.className = `c-trend ${v}`, w.innerHTML = `${v === "up" ? this._ico.up : v === "down" ? this._ico.down : this._ico.stable} ${v === "up" ? "Растёт" : v === "down" ? "Падает" : "Стабильно"}`);
     const M = o("glow");
     M && (M.style.opacity = d.running ? String(0.35 + 0.65 * Math.min(1, (n.power ?? 4) / 8)) : "0");
     const T = t.tKind === "dhw";
     this._text(o("clbl"), T ? "Бак сейчас" : "Сейчас"), this._text(o("splbl"), T ? "Уставка бака" : "Уставка");
     const S = t.targetEntity ? this._hass.states[t.targetEntity]?.state : void 0;
-    this._root.querySelectorAll(".seg").forEach((u) => u.classList.toggle("on", u.dataset.tgt === S));
+    this._root.querySelectorAll(".seg").forEach((g) => g.classList.toggle("on", g.dataset.tgt === S));
     const A = this._pendingTarget ?? l, B = o("spval");
     B && this._pendingTarget === null && (B.textContent = A !== null ? `${A.toFixed(1)}°` : "—");
-    const q = a !== null && A !== null ? A - a : null;
-    this._text(o("sphint"), d.kind === "off" ? "насос выключен" : q === null ? "" : Math.abs(q) < 0.5 ? T ? "бак нагрет" : "вода на уставке" : q > 0 ? `до уставки +${q.toFixed(1)}°` : `выше уставки на ${(-q).toFixed(1)}°`), this._num(o("fsup"), n.supply, 1), this._num(o("fret"), n.ret, 1);
+    const z = a !== null && A !== null ? A - a : null;
+    this._text(o("sphint"), d.mismatch ? "Tuya показывает «выкл»" : d.kind === "off" ? "насос выключен" : z === null ? "" : Math.abs(z) < 0.5 ? T ? "бак нагрет" : "вода на уставке" : z > 0 ? `до уставки +${z.toFixed(1)}°` : `выше уставки на ${(-z).toFixed(1)}°`), this._num(o("fsup"), n.supply, 1), this._num(o("fret"), n.ret, 1);
     const j = o("fdt");
     j && (j.className = `f-dt ${d.running ? D(n.dt) : "none"}`, j.textContent = n.dt !== null ? `ΔT ${n.dt.toFixed(1)}°` : "ΔT —");
-    for (const u of e) {
-      const _ = this._root.querySelector(`.metric[data-k="${u.k}"]`);
+    for (const g of e) {
+      const _ = this._root.querySelector(`.metric[data-k="${g.k}"]`);
       if (!_) continue;
       const $ = _.querySelector(".m-val"), y = _.querySelector(".m-fill");
       let F = !1;
-      switch (u.k) {
+      switch (g.k) {
         case "freq": {
-          this._num($, n.freq, 0, "<small>Гц</small>"), F = d.running, y && (y.className = "m-fill hot", y.style.width = `${z(n.freq, 0, 90) * 100}%`);
+          this._num($, n.freq, 0, "<small>Гц</small>"), F = d.running, y && (y.className = "m-fill hot", y.style.width = `${q(n.freq, 0, 90) * 100}%`);
           break;
         }
         case "power":
-          this._num($, n.power, 1, "<small>кВт</small>"), F = d.running, y && (y.className = "m-fill hot", y.style.width = `${z(n.power, 0, 12) * 100}%`);
+          this._num($, n.power, 1, "<small>кВт</small>"), F = d.running, y && (y.className = "m-fill hot", y.style.width = `${q(n.power, 0, 12) * 100}%`);
           break;
         case "tank": {
           this._num($, n.tank, 1, "<small>°C</small>");
           const X = n.tank !== null && n.tankSet !== null && n.tank >= n.tankSet;
-          y && (y.className = `m-fill ${X ? "ok" : ""}`, y.style.width = `${z(n.tank, 10, Math.max(40, (n.tankSet ?? 50) + 5)) * 100}%`);
+          y && (y.className = `m-fill ${X ? "ok" : ""}`, y.style.width = `${q(n.tank, 10, Math.max(40, (n.tankSet ?? 50) + 5)) * 100}%`);
           break;
         }
         case "outdoor":
@@ -1242,7 +1244,7 @@ class W extends HTMLElement {
           this._num($, A, 1, "<small>°C</small>");
           break;
         case "dt":
-          this._num($, n.dt, 1, "<small>°C</small>"), y && (y.className = `m-fill ${D(n.dt)}`, y.style.width = `${z(n.dt, 0, 12) * 100}%`);
+          this._num($, n.dt, 1, "<small>°C</small>"), y && (y.className = `m-fill ${D(n.dt)}`, y.style.width = `${q(n.dt, 0, 12) * 100}%`);
           break;
         case "heat":
           this._text($, d.running ? "Вкл" : "Нет"), F = d.running;
@@ -1252,25 +1254,25 @@ class W extends HTMLElement {
     }
     const O = o("diag");
     if (O) {
-      let u = d.kind === "defrost" ? { icon: "❄️", title: "Оттайка испарителя", text: "Насос растапливает иней на наружном блоке. Вода временно остывает — это нормально, нагрев продолжится сам.", cls: "info" } : this._dtDiag(n.dt, T ? null : a, T ? null : l, d.running && !T);
+      let g = d.kind === "defrost" ? { icon: "❄️", title: "Оттайка испарителя", text: "Насос растапливает иней на наружном блоке. Вода временно остывает — это нормально, нагрев продолжится сам.", cls: "info" } : this._dtDiag(n.dt, T ? null : a, T ? null : l, d.running && !T);
       if (this._activeGraphEntity) {
         const $ = e.find((y) => y.graph === this._activeGraphEntity);
-        u = this._cachedGraph[this._activeGraphEntity] ? { icon: "📊", title: $ ? $.lbl : "График", text: "Последние 24 часа · нажмите плитку ещё раз, чтобы скрыть", cls: "neutral" } : { icon: "⌛", title: "Загрузка", text: "Получение истории…", cls: "neutral" };
+        g = this._cachedGraph[this._activeGraphEntity] ? { icon: "📊", title: $ ? $.lbl : "График", text: "Последние 24 часа · нажмите плитку ещё раз, чтобы скрыть", cls: "neutral" } : { icon: "⌛", title: "Загрузка", text: "Получение истории…", cls: "neutral" };
       }
-      const _ = !this._activeGraphEntity && (i.show_diagnostics === !1 || u.cls === "hide");
-      O.className = `diag ${_ ? "hide" : u.cls}`, this._text(o("dicon"), u.icon), this._text(o("dtitle"), u.title), this._text(o("dtext"), u.text);
+      const _ = !this._activeGraphEntity && (i.show_diagnostics === !1 || g.cls === "hide");
+      O.className = `diag ${_ ? "hide" : g.cls}`, this._text(o("dicon"), g.icon), this._text(o("dtitle"), g.title), this._text(o("dtext"), g.text);
     }
-    this._root.querySelectorAll(".chip").forEach((u) => {
-      const _ = parseFloat(u.dataset.t || "NaN");
-      u.classList.toggle("on", A !== null && Math.abs(_ - A) < 0.1);
+    this._root.querySelectorAll(".chip").forEach((g) => {
+      const _ = parseFloat(g.dataset.t || "NaN");
+      g.classList.toggle("on", A !== null && Math.abs(_ - A) < 0.1);
     });
     const Y = t.modeEntity ? this._hass.states[t.modeEntity]?.state : void 0;
-    if (this._root.querySelectorAll(".mbtn").forEach((u) => {
-      const _ = u.dataset;
-      u.classList.toggle("on", _.opt !== void 0 ? p.toLowerCase() !== "off" && _.opt === Y : (_.m || "").toLowerCase() === p.toLowerCase());
+    if (this._root.querySelectorAll(".mbtn").forEach((g) => {
+      const _ = g.dataset;
+      g.classList.toggle("on", _.opt !== void 0 ? p.toLowerCase() !== "off" && _.opt === Y : (_.m || "").toLowerCase() === p.toLowerCase());
     }), this._telOpen) {
-      const u = this._root.querySelector(".tel-body"), _ = this._telBody(this._hass);
-      u && _ !== this._lastTelHtml && (u.innerHTML = _, this._lastTelHtml = _, this._root.getElementById("tel_params")?.addEventListener("click", ($) => this._toggleParams($)));
+      const g = this._root.querySelector(".tel-body"), _ = this._telBody(this._hass);
+      g && _ !== this._lastTelHtml && (g.innerHTML = _, this._lastTelHtml = _, this._root.getElementById("tel_params")?.addEventListener("click", ($) => this._toggleParams($)));
     }
     this._anim.tgtSpd = this._reduceMotion ? 0 : mt(d.running, n.freq), this._anim.tgtFlow = this._reduceMotion ? 0 : vt(d.running, n.power), this._kick();
   }
@@ -1282,12 +1284,12 @@ class W extends HTMLElement {
   _num(t, e, i, o = "") {
     if (!t) return;
     if (e === null || !Number.isFinite(e)) {
-      const m = `—${o}`;
-      t.innerHTML !== m && (t.innerHTML = m), this._numTweens.delete(t);
+      const f = `—${o}`;
+      t.innerHTML !== f && (t.innerHTML = f), this._numTweens.delete(t);
       return;
     }
-    const r = this._numTweens.get(t), a = (m) => {
-      t.innerHTML = `${m.toFixed(i)}${o}`;
+    const r = this._numTweens.get(t), a = (f) => {
+      t.innerHTML = `${f.toFixed(i)}${o}`;
     };
     if (!r || this._reduceMotion) {
       a(e), this._numTweens.set(t, { from: e, to: e, raf: 0 });
@@ -1295,11 +1297,11 @@ class W extends HTMLElement {
     }
     if (r.to === e) return;
     r.raf && cancelAnimationFrame(r.raf);
-    const l = r.raf ? r.from : r.to, n = performance.now(), p = 700, d = { from: l, to: e, raf: 0 }, g = (m) => {
-      const w = Math.min(1, (m - n) / p), c = 1 - Math.pow(1 - w, 3);
-      a(l + (e - l) * c), d.from = l + (e - l) * c, d.raf = w < 1 ? requestAnimationFrame(g) : 0;
+    const l = r.raf ? r.from : r.to, n = performance.now(), p = 700, d = { from: l, to: e, raf: 0 }, u = (f) => {
+      const b = Math.min(1, (f - n) / p), c = 1 - Math.pow(1 - b, 3);
+      a(l + (e - l) * c), d.from = l + (e - l) * c, d.raf = b < 1 ? requestAnimationFrame(u) : 0;
     };
-    d.raf = requestAnimationFrame(g), this._numTweens.set(t, d);
+    d.raf = requestAnimationFrame(u), this._numTweens.set(t, d);
   }
   /* ── Animation loop: compressor sweep and water flow ── */
   _kick() {
@@ -1378,7 +1380,7 @@ window.customCards.push({
   documentationURL: "https://github.com/skeep83/altal_heater_card_pro"
 });
 console.info(
-  "%c ALTAL-HEATER-CARD PRO %c v4.7.0 ",
+  "%c ALTAL-HEATER-CARD PRO %c v4.7.1 ",
   "color: white; background: #e6642f; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 8px;",
   "color: #e6642f; background: #e3e6ec; font-weight: bold; border-radius: 0 4px 4px 0; padding: 2px 8px;"
 );

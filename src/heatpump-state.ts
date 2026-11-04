@@ -16,6 +16,8 @@ export interface RunInputs {
   target: number | null;
   /** The unit reports defrost (hvac_action "defrosting" or a defrost binary_sensor). */
   defrost?: boolean;
+  /** Compressor telemetry is recent enough to trust over the Tuya power state. */
+  telemetryFresh?: boolean;
 }
 
 export type RunKind = 'off' | 'running' | 'waiting' | 'reached' | 'defrost';
@@ -27,6 +29,8 @@ export interface RunState {
   /** Water is below the setpoint, so heat is wanted. */
   demand: boolean;
   label: string;
+  /** Tuya reports the unit off while fresh telemetry shows the compressor working. */
+  mismatch?: boolean;
 }
 
 const REACHED_BAND = 0.5;
@@ -49,9 +53,18 @@ export function freshnessText(source: string | null | undefined, ageSeconds: num
  * between cycles while still below target, and the card must not animate then.
  */
 export function computeRunState(i: RunInputs): RunState {
-  if (i.off) return { kind: 'off', running: false, demand: false, label: 'Выкл' };
-
   const demand = i.current !== null && i.target !== null && i.current < i.target - REACHED_BAND;
+
+  if (i.off) {
+    // After a power blip the Tuya module can come back reporting "off" while the
+    // controller keeps running. Fresh compressor telemetry is the machine itself,
+    // so it wins over the stale power flag.
+    const working = i.telemetryFresh === true && ((i.freq ?? 0) > 0 || (i.power ?? 0) > 0.05);
+    if (!working) return { kind: 'off', running: false, demand: false, label: 'Выкл' };
+    if (i.defrost) return { kind: 'defrost', running: true, demand, label: 'Оттайка', mismatch: true };
+    return { kind: 'running', running: true, demand, label: 'Работает', mismatch: true };
+  }
+
   // Defrost runs the compressor in reverse to melt the evaporator; the water
   // cools a little meanwhile, which is expected and not a fault.
   if (i.defrost || i.hvacAction === 'defrosting') return { kind: 'defrost', running: true, demand, label: 'Оттайка' };

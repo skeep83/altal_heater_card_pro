@@ -1,6 +1,7 @@
 /**
  * Altal Heater Card — Home Assistant Lovelace Custom Card
  * Premium neumorphic card — Smart Home App style
+ * v4.7.1 — compressor telemetry wins over a stale Tuya "off"
  * v4.7.0 — defrost state, heating / DHW setpoint switch on the dial
  */
 
@@ -884,10 +885,13 @@ class AltalHeatpumpCard extends HTMLElement {
     const hvac = cl.state;
     const heatEnt = C.heating_entity && H.states[C.heating_entity] ? (H.states[C.heating_entity].state === 'on' ? 'on' : 'off') : null;
     const defrostEnt = H.states[`binary_sensor.${C.telemetry_prefix || 'altal_t_'}defrost`];
+    const updated = H.states[`sensor.${C.telemetry_prefix || 'altal_t_'}last_update`];
+    const age = updated?.last_changed ? (Date.now() - Date.parse(updated.last_changed)) / 1000 : null;
     const run: RunState = computeRunState({
       off: hvac.toLowerCase() === 'off', freq: live.freq, power: live.power, heatingEntity: heatEnt,
       hvacAction: cl.attributes.hvac_action ?? null, current: curT, target: tgtT,
       defrost: defrostEnt?.state === 'on',
+      telemetryFresh: age !== null && age >= 0 && age < 600,
     });
     const modes: string[] = Array.isArray(cl.attributes.hvac_modes)
       ? cl.attributes.hvac_modes.filter((mode: unknown): mode is string => typeof mode === 'string')
@@ -896,8 +900,6 @@ class AltalHeatpumpCard extends HTMLElement {
     const modeSt = modeEntity ? H.states[modeEntity] : undefined;
     const modeButtons = modeSt ? localModeButtons(modeSt.attributes.options, modeSt.state, C.show_cooling) : [];
     const modeCode = modeButtons.length ? localModeCode(modeSt?.state) : null;
-    const updated = H.states[`sensor.${C.telemetry_prefix || 'altal_t_'}last_update`];
-    const age = updated?.last_changed ? (Date.now() - Date.parse(updated.last_changed)) / 1000 : null;
     const fresh = freshnessText(updated?.attributes?.altal_source ?? null, age);
     const targetEntity = C.target_entity || findTargetSelect(C.climate_entity, H.states);
     const targetSt = targetEntity ? H.states[targetEntity] : undefined;
@@ -1089,7 +1091,8 @@ class AltalHeatpumpCard extends HTMLElement {
     const badge = $('badge');
     if (badge) badge.className = `badge ${run.kind}`;
     this._text($('btxt'), run.label);
-    $('pwr')?.classList.toggle('on', run.kind !== 'off');
+    // The power key mirrors what Tuya reports, because that is what pressing it toggles.
+    $('pwr')?.classList.toggle('on', hvac.toLowerCase() !== 'off');
 
     // dial
     const sMin = C.scale_min ?? 20, sMax = C.scale_max ?? 60, ARC = 414.69;
@@ -1121,7 +1124,7 @@ class AltalHeatpumpCard extends HTMLElement {
     const sp = $('spval');
     if (sp && this._pendingTarget === null) sp.textContent = shownTgt !== null ? `${shownTgt.toFixed(1)}°` : '—';
     const gap = curT !== null && shownTgt !== null ? shownTgt - curT : null;
-    this._text($('sphint'), run.kind === 'off' ? 'насос выключен' : gap === null ? '' :
+    this._text($('sphint'), run.mismatch ? 'Tuya показывает «выкл»' : run.kind === 'off' ? 'насос выключен' : gap === null ? '' :
       Math.abs(gap) < 0.5 ? (dhw ? 'бак нагрет' : 'вода на уставке') : gap > 0 ? `до уставки +${gap.toFixed(1)}°` : `выше уставки на ${(-gap).toFixed(1)}°`);
 
     // water loop
@@ -1379,7 +1382,7 @@ if (!customElements.get('altal-heatpump-card-pro')) {
 });
 
 console.info(
-  '%c ALTAL-HEATER-CARD PRO %c v4.7.0 ',
+  '%c ALTAL-HEATER-CARD PRO %c v4.7.1 ',
   'color: white; background: #e6642f; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 8px;',
   'color: #e6642f; background: #e3e6ec; font-weight: bold; border-radius: 0 4px 4px 0; padding: 2px 8px;'
 );

@@ -76,6 +76,10 @@ Tuya Local's *Temperature target* select decides whether the climate temperature
 
 Defrost comes from the climate's `hvac_action: defrosting` (or `binary_sensor.<prefix>defrost`). The badge then reads *Оттайка* in the cool colour and the diagnostics explain that the water cools briefly on purpose.
 
+### Stale Tuya "off" (v4.7.1)
+
+After a power blip the Tuya module can come back reporting the unit off while the controller keeps heating. When the climate says `off` but fresh telemetry (`last_update` younger than 10 min) shows the compressor running, the card trusts the compressor: the badge reads *Работает*, the animation runs, and the hint under the setpoint says *Tuya показывает «выкл»*. The power key still mirrors the Tuya state, because that is what pressing it toggles; pressing it re-syncs Tuya.
+
 The telemetry header shows where the data comes from and how old it is (`локально · 20 с назад`), read from `sensor.<telemetry_prefix>last_update` and its `altal_source` attribute.
 
 The card translates Home Assistant mode values for display (`hot`, `cold`, `hotwater`, `hot_hotwater`, `cold_hotwater`) but sends the original supported value to Home Assistant. The power control uses the entity's `hvac_modes` list and restores the last active mode when possible. The manual's c41/d41 setting controls which mode families are enabled; it is not the current runtime mode.
